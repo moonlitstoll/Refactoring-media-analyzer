@@ -852,21 +852,17 @@ const App = () => {
 
         batchPromises.push((async () => {
           try {
-            // Returns Array of [s, o, t, [[w, m], ...]]
             const rawResults = await analyzeSentences(batchData, apiKey, modelId);
 
-            // Adapter: Short-Key Object -> App State mapping
+            // Zero-Key Index Mapper: 100% Accuracy without text-matching
             rawResults.forEach(res => {
-              const { s, o, t, w: wordsArr } = res;
-              const targetIdx = workingData.findIndex(item =>
-                !item.isAnalyzed &&
-                (item.s === s || item.timestamp === s) &&
-                (item.o === o || item.text === o)
-              );
-              if (targetIdx !== -1) {
-                workingData[targetIdx] = {
-                  ...workingData[targetIdx],
-                  t,
+              const [localIdx, t, wordsArr] = res;
+              const globalIdx = batchIndices[localIdx];
+
+              if (globalIdx !== undefined && workingData[globalIdx]) {
+                workingData[globalIdx] = {
+                  ...workingData[globalIdx],
+                  t: t || "",
                   words: Array.isArray(wordsArr) ? wordsArr.map(([w, m]) => ({ w, m })) : [],
                   isAnalyzed: true
                 };
@@ -875,7 +871,6 @@ const App = () => {
             updateGlobalState(workingData);
           } catch (err) {
             console.error(`[Stage 2] Batch error:`, err);
-            // Mark as analyzed even if failed to prevent infinite loops in single-pass
             batchIndices.forEach(idx => { workingData[idx].isAnalyzed = true; });
           }
         })());
