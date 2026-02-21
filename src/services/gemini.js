@@ -108,30 +108,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
  */
 // --- STAGE 2 ZERO-KEY INDEX SCHEMA ---
 // Structure: [Index, Translation, [[Word, Meaning], ...]]
-const STAGE2_SCHEMA = {
-    type: "array",
-    items: {
-        type: "array",
-        items: {
-            anyOf: [
-                { type: "integer", description: "Batch-local index (0-29)" },
-                { type: "string", description: "Korean Translation" },
-                {
-                    type: "array",
-                    description: "Word analysis: [[word, meaning], ...]",
-                    items: {
-                        type: "array",
-                        items: { type: "string" }
-                    }
-                }
-            ]
-        }
-    }
-};
-
 /**
- * Stage 2: Ultra-Lightweight Index-Based Analysis
- * Only returns [Index, Translation, Words] to minimize token usage and maximize speed.
+ * Stage 2: Reset & Chunk-Based Pocket Analysis
+ * Focuses purely on semantic chunking and ultra-compressed explanations for mobile.
  */
 export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-flash") {
     if (!apiKey) throw new Error("API Key is required");
@@ -144,27 +123,36 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
         model: modelName,
         generationConfig: {
             responseMimeType: "application/json",
-            maxOutputTokens: 65536 // 64K MAX FOR ZERO TRUNCATION
+            maxOutputTokens: 65536
         }
     }, { apiVersion: "v1beta" });
 
-    // Input: list of [index, text]
+    // Input: Clean mapping of [index, text]
     const inputContent = JSON.stringify(sentences.map((s, idx) => [idx, s.o || s.text]));
 
     try {
         const result = await model.generateContent([
-            `당신은 분석 속도와 정확도가 극대화된 언어학자 AI입니다. 
-주어진 각 항목에 대해 [번호, "자연스러운 한국어 번역", [["단어/구", "품사, 뜻, 어원 통합 해설"], ...]] 형식의 배열만 출력하십시오.
-데이터 양이 많더라도 절대 생략하거나 도중에 끊지 말고, 반드시 마지막 문장까지 분석하여 JSON 배열 구조를 완전히 닫으십시오.
-이미 알고 있는 원문과 시간 정보는 응답에서 절대 다시 언급하지 마십시오. 오직 번호와 분석 결과만 반환하십시오.`,
+            `당신은 분석 정확도가 100%인 베트남어-한국어 언어학 전문가입니다. 
+주어진 각 문장을 의미적으로 연관성 있는 '청크(Chunk)' 단위로 쪼개고, 모바일 가독성을 위해 극도로 압축된 해설을 제공하십시오.
+
+[분석 규칙]
+1. 모든 해설에서 미사여구를 제거하고 '핵심 키워드'만 명사형으로 짧게 쓰십시오. (예: "감탄사. 권유·제안.")
+2. 각 문장의 전체 의미를 반영한 자연스러운 '한국어 번역'을 포함하십시오.
+3. 응답은 반드시 아래의 JSON 배열 형식을 지키십시오.
+
+[응답 형식]
+[
+  [번호, "한국어 번역", [["의미 청크", "초압축 해설"], ...]],
+  ...
+]`,
             `분석 대상 (번호와 원문):\n${inputContent}`
         ]);
 
-        return JSON.parse(result.response.text());
+        const parsed = JSON.parse(result.response.text());
+        return Array.isArray(parsed) ? parsed : [];
 
     } catch (err) {
-        console.error(`[Stage 2] Index-based analysis failed:`, err);
-        // Fallback: Return empty results mapped to indices
+        console.error(`[Stage 2] Reset Analysis failed:`, err);
         return sentences.map((_, idx) => [idx, "", []]);
     }
 }

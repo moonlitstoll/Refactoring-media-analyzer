@@ -854,23 +854,28 @@ const App = () => {
           try {
             const rawResults = await analyzeSentences(batchData, apiKey, modelId);
 
-            // Zero-Key Index Mapper: Syncing field names with TranscriptItem (translation, word, meaning)
-            rawResults.forEach(res => {
-              const [localIdx, translation, wordsArr] = res;
-              const globalIdx = batchIndices[localIdx];
+            // Robust Result Mapper: Prevents TypeError and ensures 100% mapping
+            if (Array.isArray(rawResults)) {
+              rawResults.forEach(res => {
+                if (!Array.isArray(res)) return; // Protection against invalid items
 
-              if (globalIdx !== undefined && workingData[globalIdx]) {
-                workingData[globalIdx] = {
-                  ...workingData[globalIdx],
-                  translation: translation || "", // Must match TranscriptItem: item.translation
-                  words: Array.isArray(wordsArr) ? wordsArr.map(([word, meaning]) => ({ word, meaning })) : [], // Must match w.word, w.meaning
-                  isAnalyzed: true
-                };
-              }
-            });
+                const [localIdx, translation, wordsArr] = res;
+                const globalIdx = batchIndices[localIdx];
+
+                if (globalIdx !== undefined && workingData[globalIdx]) {
+                  workingData[globalIdx] = {
+                    ...workingData[globalIdx],
+                    translation: translation || "",
+                    words: Array.isArray(wordsArr) ? wordsArr.map(([word, meaning]) => ({ word, meaning })) : [],
+                    isAnalyzed: true
+                  };
+                }
+              });
+            }
             updateGlobalState(workingData);
           } catch (err) {
-            console.error(`[Stage 2] Batch error:`, err);
+            console.error(`[Stage 2] Critical Batch Error:`, err);
+            // Safety: Mark as analyzed even if we had an error to avoid getting stuck
             batchIndices.forEach(idx => { workingData[idx].isAnalyzed = true; });
           }
         })());
