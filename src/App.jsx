@@ -803,7 +803,7 @@ const App = () => {
           } catch (e) { }
 
           // STEP 2: Automatic Sequential Detail Analysis (Stage 2)
-          runStage2(fItem.id, data, apiKey, selectedModel);
+          runStage2(fItem.id, fItem.file, data, apiKey, selectedModel);
 
           // Save media to store after successful Stage 1
           try {
@@ -823,7 +823,7 @@ const App = () => {
    * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
    * Process sentences in batches of 30 to prevent JSON corruption while remaining efficient.
    */
-  const runStage2 = async (fileId, transcript, apiKey, modelId) => {
+  const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
     console.log(`[Stage 2] Starting Ultra-Lightweight 30x5 Analysis for file ${fileId}...`);
     const BATCH_SIZE = 30;
     const PARALLEL_BATCH_COUNT = 5;
@@ -873,6 +873,23 @@ const App = () => {
               });
             }
             updateGlobalState(workingData);
+
+            // [INTERMEDIATE SAVE] Save progress after each batch to avoid data loss
+            if (fileInfo && fileInfo.name) {
+              const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
+              try {
+                localStorage.setItem(cacheKey, JSON.stringify({
+                  data: workingData,
+                  metadata: {
+                    name: fileInfo.name,
+                    size: fileInfo.size,
+                    lastModified: fileInfo.lastModified,
+                    savedAt: Date.now(),
+                    status: 'analyzing'
+                  }
+                }));
+              } catch (e) { }
+            }
           } catch (err) {
             console.error(`[Stage 2] Critical Batch Error:`, err);
             // Safety: Mark as analyzed even if we had an error to avoid getting stuck
@@ -890,13 +907,18 @@ const App = () => {
     workingData = workingData.map(item => ({ ...item, isAnalyzed: true }));
     updateGlobalState(workingData);
 
-    const file = files.find(f => f.id === fileId);
-    if (file) {
-      const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
+    if (fileInfo && fileInfo.name) {
+      const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
       try {
         localStorage.setItem(cacheKey, JSON.stringify({
           data: workingData,
-          metadata: { name: file.file.name, size: file.file.size, lastModified: file.file.lastModified, savedAt: Date.now() }
+          metadata: {
+            name: fileInfo.name,
+            size: fileInfo.size,
+            lastModified: fileInfo.lastModified,
+            savedAt: Date.now(),
+            status: 'completed'
+          }
         }));
       } catch (e) { }
     }
@@ -1681,7 +1703,7 @@ const App = () => {
                               if (cachedData && cachedData.data) {
                                 const total = cachedData.data.length;
                                 const analyzed = cachedData.data.filter(d => d.isAnalyzed).length;
-                                isFullyAnalyized = total > 0 && analyzed === total;
+                                isFullyAnalyzed = total > 0 && analyzed === total;
                                 progressText = `${analyzed}/${total} Sentences`;
 
                                 if (isFullyAnalyzed) {
