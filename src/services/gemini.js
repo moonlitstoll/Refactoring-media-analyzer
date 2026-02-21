@@ -144,7 +144,6 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
         model: modelName,
         generationConfig: {
             responseMimeType: "application/json",
-            responseSchema: STAGE2_SCHEMA,
             maxOutputTokens: 65536 // 64K MAX FOR ZERO TRUNCATION
         }
     }, { apiVersion: "v1beta" });

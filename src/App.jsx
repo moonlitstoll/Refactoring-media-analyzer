@@ -854,16 +854,16 @@ const App = () => {
           try {
             const rawResults = await analyzeSentences(batchData, apiKey, modelId);
 
-            // Zero-Key Index Mapper: 100% Accuracy without text-matching
+            // Zero-Key Index Mapper: Syncing field names with TranscriptItem (translation, word, meaning)
             rawResults.forEach(res => {
-              const [localIdx, t, wordsArr] = res;
+              const [localIdx, translation, wordsArr] = res;
               const globalIdx = batchIndices[localIdx];
 
               if (globalIdx !== undefined && workingData[globalIdx]) {
                 workingData[globalIdx] = {
                   ...workingData[globalIdx],
-                  t: t || "",
-                  words: Array.isArray(wordsArr) ? wordsArr.map(([w, m]) => ({ w, m })) : [],
+                  translation: translation || "", // Must match TranscriptItem: item.translation
+                  words: Array.isArray(wordsArr) ? wordsArr.map(([word, meaning]) => ({ word, meaning })) : [], // Must match w.word, w.meaning
                   isAnalyzed: true
                 };
               }
