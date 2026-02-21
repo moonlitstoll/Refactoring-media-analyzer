@@ -173,7 +173,6 @@ const TranscriptItem = memo(({
                     <span className="font-bold text-emerald-700 text-[16px] sm:text-[18px] w-[35%] shrink-0 break-words leading-tight pt-0.5">{w.word}</span>
                     <div className="flex-1 min-w-0">
                       <span className="block text-slate-800 text-[15px] sm:text-[16px] font-bold leading-[1.3]">{w.meaning}</span>
-                      {w.func && <span className="block text-slate-600 text-[13px] sm:text-[14px] mt-0.5 whitespace-pre-line leading-relaxed">{w.func}</span>}
                     </div>
                   </div>
                 ))}
