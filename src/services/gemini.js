@@ -81,6 +81,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
     // Use the selected model (No more sequential retry as requested)
     const modelName = getModels(modelId)[0] || "gemini-2.5-flash";
 
+    console.log(`[Stage 1] Analyzing with model: ${modelName}. File size: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
+
     try {
         const base64Data = await fileToGenerativePart(file);
         const mimeType = file.type || "audio/mpeg";
@@ -113,39 +115,83 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
 
 /**
  * Stage 2: Sequential Detailed Analysis
+ * Optimized for robustness with Smart Split and JSON Repair.
  */
-export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-flash") {
+export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-flash") {
     if (!apiKey) throw new Error("API Key is required");
     if (!sentences || sentences.length === 0) return [];
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const MODELS = getModels(modelId);
+    const modelName = getModels(modelId)[0] || "gemini-2.5-flash";
 
-    // Format sentences as a string to pass back to AI
-    const inputContent = JSON.stringify(sentences.map(s => ({ s: s.s, o: s.o })));
+    const fetchAnalysis = async (batch) => {
+        const inputContent = JSON.stringify(batch.map(s => ({ s: s.s, o: s.o })));
+        const model = genAI.getGenerativeModel({
+            model: modelName,
+            generationConfig: {
+                responseMimeType: "application/json",
+                maxOutputTokens: 8192 // Increase output capacity
+            }
+        }, { apiVersion: "v1beta" });
 
-    let lastError;
-    for (let modelName of MODELS) {
+        const result = await model.generateContent([
+            STAGE2_PROMPT,
+            `분석할 문장 리스트:\n${inputContent}`
+        ]);
+
+        const response = await result.response;
+        let text = response.text().trim();
+
+        // Basic JSON cleanup
+        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+
         try {
-            const model = genAI.getGenerativeModel({
-                model: modelName,
-                generationConfig: { responseMimeType: "application/json" }
-            }, { apiVersion: "v1beta" });
-
-            const result = await model.generateContent([
-                STAGE2_PROMPT,
-                `분석할 문장 리스트:\n${inputContent}`
-            ]);
-
-            const response = await result.response;
-            let text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
             return JSON.parse(text);
-        } catch (err) {
-            lastError = err;
-            console.error(`Stage 2 Error with ${modelName}:`, err);
+        } catch (parseError) {
+            console.warn(`[Stage 2] Parsing failed, attempting repair...`);
+            try {
+                return JSON.parse(repairJson(text));
+            } catch (repairError) {
+                throw new Error("JSON_PARSE_FAILED");
+            }
+        }
+    };
+
+    try {
+        return await fetchAnalysis(sentences);
+    } catch (err) {
+        if (err.message === "JSON_PARSE_FAILED" && sentences.length > 1) {
+            console.log(`[Stage 2] High density detected. Splitting batch into half (Smart Split)...`);
+            const mid = Math.ceil(sentences.length / 2);
+            const left = sentences.slice(0, mid);
+            const right = sentences.slice(mid);
+
+            // Fixed model: retry with smaller chunks but same model
+            const resultsLeft = await analyzeSentences(left, apiKey, modelId);
+            const resultsRight = await analyzeSentences(right, apiKey, modelId);
+            return [...resultsLeft, ...resultsRight];
+        }
+        console.error(`[Stage 2] Analysis failed for model ${modelName}:`, err);
+        throw err;
+    }
+}
+
+/**
+ * Simple JSON repair for truncated responses
+ */
+function repairJson(jsonStr) {
+    let str = jsonStr.trim();
+    // 1. If it doesn't end with ], it might be truncated
+    if (!str.endsWith(']')) {
+        // Try to find the last valid object end
+        const lastObjectEnd = str.lastIndexOf('}');
+        if (lastObjectEnd !== -1) {
+            str = str.substring(0, lastObjectEnd + 1) + ']';
+        } else {
+            str += ']'; // Desperate attempt
         }
     }
-    throw lastError || new Error("Stage 2 Analysis Failed");
+    return str;
 }
 
 function normalizeTimestamps(data) {
