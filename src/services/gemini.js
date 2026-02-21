@@ -145,7 +145,7 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
         generationConfig: {
             responseMimeType: "application/json",
             responseSchema: STAGE2_SCHEMA,
-            maxOutputTokens: 8192
+            maxOutputTokens: 65536 // 64K MAX FOR ZERO TRUNCATION
         }
     }, { apiVersion: "v1beta" });
 
@@ -156,6 +156,7 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
         const result = await model.generateContent([
             `당신은 분석 속도와 정확도가 극대화된 언어학자 AI입니다. 
 주어진 각 항목에 대해 [번호, "자연스러운 한국어 번역", [["단어/구", "품사, 뜻, 어원 통합 해설"], ...]] 형식의 배열만 출력하십시오.
+데이터 양이 많더라도 절대 생략하거나 도중에 끊지 말고, 반드시 마지막 문장까지 분석하여 JSON 배열 구조를 완전히 닫으십시오.
 이미 알고 있는 원문과 시간 정보는 응답에서 절대 다시 언급하지 마십시오. 오직 번호와 분석 결과만 반환하십시오.`,
             `분석 대상 (번호와 원문):\n${inputContent}`
         ]);
