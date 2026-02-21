@@ -1155,10 +1155,10 @@ const App = () => {
 
                   <span className={`text-base font-bold truncate group-hover:text-indigo-700 transition-colors ${isAnalyzing || isSwitchingFile ? 'text-slate-500 italic' : ''}`}>
                     {isAnalyzing
-                      ? `Extracting... ${activeFile.file.name}`
-                      : (activeFile.data && activeFile.data.some(d => !d.isAnalyzed)
-                        ? `Analyzing (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
-                        : activeFile.file.name)
+                      ? `Extracting Transcript...`
+                      : (activeFile?.data && activeFile.data.some(d => !d.isAnalyzed)
+                        ? `Analyzing Details (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
+                        : activeFile?.file?.name || "Ready")
                     }
                   </span>
                 </div>
@@ -1197,8 +1197,8 @@ const App = () => {
                       <h3 className="text-lg font-bold text-slate-900">Analyzing {activeFile.file.name}...</h3>
                       <p className="text-slate-500">
                         {activeFile.data && activeFile.data.length > 0
-                          ? `Processing Sentence Details (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
-                          : "Extracting voice timeline using Gemini 2.5..."
+                          ? `Applying 8 Principles & Deep Scan (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
+                          : "Extracting timeline using Gemini 2.5..."
                         }
                       </p>
                     </div>
