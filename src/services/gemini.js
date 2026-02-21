@@ -133,49 +133,63 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
     try {
         const result = await model.generateContent([
             `당신은 분석 정확도가 100%인 베트남어-한국어 언어학 전문가입니다. 
-주어진 문장을 학습자가 이해하기 가장 좋게 '스마트 청크' 단위로 분해하고 분석하십시오.
+주어진 각 문장을 의미 및 문법적 연관성이 있는 '청크(Chunk)' 단위로 분해하고 분석하십시오. 
 
-[분석 및 요약 규칙]
-1. 의미적 청크 분해: 문장을 의미적으로 연관성이 높은 덩어리(Chunk) 단위로 쪼개어 설명하십시오.
-2. 다음절 단어 정밀 분석: 다음절 단어는 각 음절의 의미(특히 한자어 어원)를 분해하여 설명하십시오. 
-   - 예: cơ sở (기초 cơ + 지점 sở = 시설, 거점)
-   - 단, 나누지 않았을 때 더 자연스럽다면 통합하여 설명하십시오.
-3. 핵심 요약: 미사여구(예: ~을 의미함, ~을 나타내는 말임)를 싹 빼고 오직 핵심 뜻과 문법적 정보만 명사형으로 짧게 요약하십시오. (모바일 최적화)
-4. 모든 문장 누락 금지: 요청받은 모든 번호에 대해 빠짐없이 응답하십시오.
+[분석 및 속도 최적화 규칙]
+1. 단순 청크 구성: 주신 문장을 의미 단위로 쪼개고 아래 예시와 같이 [청크: 번역 (구성요소 설명)] 형태로 한 줄로 요약하십시오.
+   - 예시: anh hiểu không?: 오빠 이해해요? (anh: 오빠 + hiểu: 이해하다 + không?: ~인가요?)
+2. 고속 응답: 불필요한 중첩 배열이나 미사여구를 생략하고, 최대한 짧고 명확한 문자열로 정보를 압축하여 생성 토큰 수를 최소화하십시오.
+3. 정밀 매핑: 요청된 모든 문장 번호에 대해 빠짐없이 응답하십시오.
 
 [응답 형식]
 [
-  [번호, "한국어 번역", [["의미 청크", "핵심 요약 해설 및 어원"], ...]],
+  [번호, "전체 한국어 번역", [["의미 청크 한 문장", "단순 해설 문자열"], ...]],
   ...
 ]`,
             `분석 대상 (번호와 원문):\n${inputContent}`
         ]);
 
-        const parsed = JSON.parse(result.response.text());
+        let responseText = result.response.text();
+
+        // Robust JSON Extraction: Get only the part between the first '[' and the last ']'
+        const firstBracket = responseText.indexOf('[');
+        const lastBracket = responseText.lastIndexOf(']');
+
+        if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+            responseText = responseText.substring(firstBracket, lastBracket + 1);
+        } else {
+            // Fallback: cleaning basic markdown if brackets not found (unlikely for valid JSON)
+            responseText = responseText.replace(/```json\s?|```/g, "").trim();
+        }
+
+        const parsed = JSON.parse(responseText);
         return Array.isArray(parsed) ? parsed : [];
 
     } catch (err) {
-        console.error(`[Stage 2] Reset Analysis failed:`, err);
+        console.error(`[Stage 2] High-Speed Analysis failed:`, err);
         return sentences.map((_, idx) => [idx, "", []]);
     }
 }
 
 /**
- * Simple JSON repair for truncated responses
+ * Robust JSON extraction and repair (Internal utility)
  */
-function repairJson(jsonStr) {
-    let str = jsonStr.trim();
-    // 1. If it doesn't end with ], it might be truncated
-    if (!str.endsWith(']')) {
-        // Try to find the last valid object end
-        const lastObjectEnd = str.lastIndexOf('}');
-        if (lastObjectEnd !== -1) {
-            str = str.substring(0, lastObjectEnd + 1) + ']';
+function cleanAndParseJson(jsonStr) {
+    try {
+        let str = jsonStr.trim();
+        const firstBracket = str.indexOf('[');
+        const lastBracket = str.lastIndexOf(']');
+        if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+            str = str.substring(firstBracket, lastBracket + 1);
         } else {
-            str += ']'; // Desperate attempt
+            // Fallback: cleaning basic markdown if brackets not found (unlikely for valid JSON)
+            str = str.replace(/```json\s?|```/g, "").trim();
         }
+        return JSON.parse(str);
+    } catch (e) {
+        console.error("JSON Clean & Parse failed", e);
+        return null;
     }
-    return str;
 }
 
 function normalizeTimestamps(data) {

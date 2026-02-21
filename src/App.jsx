@@ -1669,9 +1669,9 @@ const App = () => {
                           .sort().reverse().map(key => {
                             const name = key.replace('gemini_analysis_', '');
                             const isActive = activeFile?.file?.name === name; // Simple check by name
-
-                            // [Phase 4] 히스토리 상태 파싱
-                            let statusText = "CACHED";
+                            // [Phase 4] 실시간 분석 상태 동적 배지 전환
+                            let statusText = "READY";
+                            let badgeColor = "bg-gray-100 text-gray-600";
                             let progressText = "";
                             let isFullyAnalyzed = false;
 
@@ -1680,48 +1680,47 @@ const App = () => {
                               if (cachedData && cachedData.data) {
                                 const total = cachedData.data.length;
                                 const analyzed = cachedData.data.filter(d => d.isAnalyzed).length;
-                                isFullyAnalyzed = analyzed === total;
+                                isFullyAnalyzed = total > 0 && analyzed === total;
                                 progressText = `${analyzed}/${total} Sentences`;
 
-                                if (cachedData.metadata?.status === 'extracted') {
-                                  statusText = "EXTRACTED";
-                                } else if (isFullyAnalyzed) {
+                                if (isFullyAnalyzed) {
                                   statusText = "COMPLETED";
+                                  badgeColor = "bg-green-100 text-green-700 font-bold";
+                                } else if (analyzed > 0) {
+                                  statusText = `ANALYZING`;
+                                  badgeColor = "bg-blue-100 text-blue-700 animate-pulse";
+                                } else if (cachedData.metadata?.status === 'extracted') {
+                                  statusText = "READY";
+                                  badgeColor = "bg-yellow-100 text-yellow-700";
                                 }
+                              } else if (!cachedData) {
+                                statusText = "OFFLINE";
                               }
-                            } catch (e) { }
+                            } catch (e) {
+                              statusText = "ERROR";
+                            }
 
                             return (
                               <div
                                 key={key}
-                                className={`
-                                  group flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all
-                                  ${isActive
-                                    ? 'bg-indigo-50 border-indigo-200 shadow-md shadow-indigo-100'
-                                    : 'bg-white border-slate-200 hover:border-indigo-300 hover:bg-slate-50'}
-                                `}
-                                onClick={() => loadCache(key)}
+                                className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center gap-3 ${isActive ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-100 hover:border-indigo-200'}`}
+                                onClick={() => {
+                                  handleLoadHistory(key);
+                                  setHistoryOpen(false);
+                                }}
                               >
-                                <div className="flex items-center gap-4 min-w-0 flex-1">
-                                  <div className={`p-2.5 rounded-xl ${isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                                    {isActive ? <Check size={20} /> : <BookOpen size={20} />}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{name}</p>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black tracking-tight ${isFullyAnalyzed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                                        }`}>
-                                        {statusText}
-                                      </span>
-                                      {progressText && (
-                                        <span className="text-[10px] font-medium text-slate-400">
-                                          {progressText}
-                                        </span>
-                                      )}
-                                    </div>
+                                <div className="w-10 h-10 rounded-lg bg-gray-50 flex items-center justify-center text-gray-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
+                                  <BookOpen size={20} />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <h4 className="text-sm font-semibold text-gray-900 truncate">{name}</h4>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium uppercase tracking-wider ${badgeColor}`}>
+                                      {statusText}
+                                    </span>
+                                    <span className="text-[11px] text-gray-400">{progressText}</span>
                                   </div>
                                 </div>
-
                                 <div className="flex items-center gap-2 pl-4 border-l border-slate-100/50 ml-4">
                                   <button
                                     onClick={(e) => { e.stopPropagation(); deleteCache(key); }}
@@ -1742,7 +1741,7 @@ const App = () => {
 
               </div>
             </div>
-          </div>
+          </div >
         )
       }
 
