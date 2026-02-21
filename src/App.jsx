@@ -1629,42 +1629,50 @@ const App = () => {
                     return (
                       <div className="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 space-y-2">
                         {/* 1. Analyzing Files */}
-                        {analyzingFiles.map(f => (
-                          <div
-                            key={f.id}
-                            className="group flex items-center justify-between p-3 rounded-2xl border bg-indigo-50/50 border-indigo-200 shadow-sm"
-                          >
-                            <div className="flex items-center gap-4 min-w-0 flex-1">
-                              <div className="p-2.5 rounded-xl bg-indigo-100 text-indigo-600 animate-pulse">
-                                <FileVideo size={20} />
+                        {analyzingFiles.map(f => {
+                          const isActive = activeFileId === f.id;
+                          return (
+                            <div
+                              key={f.id}
+                              onClick={() => { setActiveFileId(f.id); setShowCacheHistory(false); }}
+                              className={`
+                                group flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer
+                                ${isActive
+                                  ? 'bg-indigo-100 border-indigo-300 shadow-md'
+                                  : 'bg-indigo-50/50 border-indigo-200 hover:bg-indigo-100/50 hover:border-indigo-300'}
+                              `}
+                            >
+                              <div className="flex items-center gap-4 min-w-0 flex-1">
+                                <div className={`p-2.5 rounded-xl ${isActive ? 'bg-indigo-600 text-white' : 'bg-indigo-100 text-indigo-600'} animate-pulse`}>
+                                  <FileVideo size={20} />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-indigo-900'}`}>{f.file.name}</p>
+                                  <p className={`text-xs font-medium mt-0.5 animate-pulse ${isActive ? 'text-indigo-700' : 'text-indigo-600'}`}>
+                                    {f.data && f.data.length > 0
+                                      ? `Analyzing (${f.data.filter(d => d.isAnalyzed).length}/${f.data.length})...`
+                                      : "Extracting Transcript..."
+                                    }
+                                  </p>
+                                </div>
                               </div>
-                              <div className="min-w-0">
-                                <p className="text-base font-bold truncate text-indigo-900">{f.file.name}</p>
-                                <p className="text-xs font-medium mt-0.5 text-indigo-600 animate-pulse">
-                                  {f.data && f.data.length > 0
-                                    ? `Analyzing (${f.data.filter(d => d.isAnalyzed).length}/${f.data.length})...`
-                                    : "Extracting Transcript..."
-                                  }
-                                </p>
-                              </div>
-                            </div>
 
-                            <div className="flex items-center gap-2 pl-4 border-l border-indigo-100 ml-4">
-                              <div className="hidden sm:flex items-center gap-2 mr-2">
-                                <div className="w-2 h-2 bg-indigo-500 rounded-full animate-ping" />
-                                <span className="text-xs font-bold text-indigo-500">Processing</span>
+                              <div className="flex items-center gap-2 pl-4 border-l border-indigo-100 ml-4">
+                                <div className="hidden sm:flex items-center gap-2 mr-2">
+                                  <div className={`w-2 h-2 rounded-full animate-ping ${isActive ? 'bg-indigo-700' : 'bg-indigo-500'}`} />
+                                  <span className={`text-xs font-bold ${isActive ? 'text-indigo-700' : 'text-indigo-500'}`}>Processing</span>
+                                </div>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); removeFile(f.id, e); }}
+                                  className="p-2.5 text-indigo-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                                  title="Cancel Analysis"
+                                >
+                                  <X size={20} />
+                                </button>
                               </div>
-                              {/* Delete Disabled for analyzing files usually, or cancel? For now, allow remove */}
-                              <button
-                                onClick={(e) => removeFile(f.id, e)}
-                                className="p-2.5 text-indigo-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
-                                title="Cancel Analysis"
-                              >
-                                <X size={20} />
-                              </button>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
 
                         {/* 2. Cached Files */}
                         {filteredCacheKeys
