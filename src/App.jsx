@@ -121,7 +121,7 @@ const TranscriptItem = memo(({
           onClick={() => jumpToSentence(idx)}
           className={`
             text-xl sm:text-2xl md:text-3xl leading-snug cursor-pointer transition-all duration-300 mb-1 px-1
-            ${isActive ? 'text-black font-bold tracking-tight' : 'text-slate-900'}
+            ${isActive ? 'text-black' : 'text-slate-900'}
           `}
         >
           {item.text}
@@ -352,9 +352,9 @@ const App = () => {
           text,
           translation,
           patterns,
-          words: item.w || item.words || [],
+          words: words,
           // 판정 기준 강화: 상세 단어 분석(w/words)이 실질적으로 존재해야 완료된 것으로 간주
-          isAnalyzed: item.isAnalyzed || (item.w && item.w.length > 0) || (item.words && item.words.length > 0)
+          isAnalyzed: item.isAnalyzed || (words && words.length > 0)
         };
       })
       .sort((a, b) => a.startSeconds - b.startSeconds);
