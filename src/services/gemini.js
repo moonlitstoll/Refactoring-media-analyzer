@@ -106,38 +106,32 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
  * Stage 2: Sequential Detailed Analysis
  * Optimized for robustness with Smart Split and JSON Repair.
  */
-// --- STAGE 2 LIGHTWEIGHT ARRAY SCHEMA ---
-// Structure: [s, o, t, [[w, m], ...]] -> [Time, Orig, Trans, [[Word, Meaning], ...]]
+// --- STAGE 2 COMPATIBLE LIGHTWEIGHT SCHEMA ---
+// Structure: { s: time, o: orig, t: trans, w: [[word, mean], ...] }
 const STAGE2_SCHEMA = {
     type: "array",
     items: {
-        type: "array",
-        prefixItems: [
-            { type: "string", description: "Timestamp [MM:SS]" },
-            { type: "string", description: "Original text" },
-            { type: "string", description: "Korean translation" },
-            {
+        type: "object",
+        properties: {
+            s: { type: "string", description: "Timestamp [MM:SS]" },
+            o: { type: "string", description: "Original text" },
+            t: { type: "string", description: "Korean translation" },
+            w: {
                 type: "array",
-                description: "Word analysis chunks",
+                description: "Word analysis: [[word, meaning], ...]",
                 items: {
                     type: "array",
-                    prefixItems: [
-                        { type: "string", description: "Word/Phrase" },
-                        { type: "string", description: "[Role] Meaning (Details)" }
-                    ],
-                    minItems: 2,
-                    maxItems: 2
+                    items: { type: "string" }
                 }
             }
-        ],
-        minItems: 4,
-        maxItems: 4
+        },
+        required: ["s", "o", "t", "w"]
     }
 };
 
 /**
  * Stage 2: Ultra-Lightweight Sequential Analysis
- * Uses Positional Arrays instead of Objects to reduce token usage and latency.
+ * Uses Short-Key Objects and Nested Arrays for maximum compatibility and speed.
  */
 export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-flash") {
     if (!apiKey) throw new Error("API Key is required");
@@ -155,21 +149,26 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
         }
     }, { apiVersion: "v1beta" });
 
-    // Minimal input: only time and original text
+    // Minimal input: list of [s, o]
     const inputContent = JSON.stringify(sentences.map(s => [s.s, s.o]));
 
     try {
         const result = await model.generateContent([
-            `당신은 초경량 언어 분석 AI입니다. 주어진 리스트의 각 항목을 [시간, 원문, 번역, [[단어, 해설], ...]] 형식의 배열로 분석하십시오. 해설에는 한자어 음과 뜻을 포함하되 극도로 간결하게 작성하십시오.`,
+            `당신은 고속 언어 분석 AI입니다. 각 항목을 반드시 { "s": "시간", "o": "원문", "t": "번역", "w": [["단어", "뜻"], ...] } 형식으로 분석하십시오.`,
             `분석 대상:\n${inputContent}`
         ]);
 
         return JSON.parse(result.response.text());
 
     } catch (err) {
-        console.error(`[Stage 2] High-speed analysis failed:`, err);
-        // Fallback to blank structures in the same array format
-        return sentences.map(s => [s.s, s.o, "", []]);
+        console.error(`[Stage 2] Analysis failed:`, err);
+        // Fallback to blank structures
+        return sentences.map(s => ({
+            s: s.s,
+            o: s.o,
+            t: "",
+            w: []
+        }));
     }
 }
 

@@ -855,9 +855,9 @@ const App = () => {
             // Returns Array of [s, o, t, [[w, m], ...]]
             const rawResults = await analyzeSentences(batchData, apiKey, modelId);
 
-            // Adapter: Array -> Object mapping
-            rawResults.forEach(raw => {
-              const [s, o, t, words] = raw;
+            // Adapter: Short-Key Object -> App State mapping
+            rawResults.forEach(res => {
+              const { s, o, t, w: wordsArr } = res;
               const targetIdx = workingData.findIndex(item =>
                 !item.isAnalyzed &&
                 (item.s === s || item.timestamp === s) &&
@@ -867,7 +867,7 @@ const App = () => {
                 workingData[targetIdx] = {
                   ...workingData[targetIdx],
                   t,
-                  words: Array.isArray(words) ? words.map(([w, m]) => ({ w, m })) : [],
+                  words: Array.isArray(wordsArr) ? wordsArr.map(([w, m]) => ({ w, m })) : [],
                   isAnalyzed: true
                 };
               }
