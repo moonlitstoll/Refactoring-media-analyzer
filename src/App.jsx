@@ -823,12 +823,17 @@ const App = () => {
    * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
    * Process sentences in batches of 30 to prevent JSON corruption while remaining efficient.
    */
-  const runStage2 = async (fileId, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting 2-Pass Analysis for file ${fileId}...`);
+    const runStage2 = async (fileId, transcript, apiKey, modelId) => {
+    console.log('[Stage 2] Starting High-Reliability 2-Pass Analysis for file ' + fileId + '...');
     const BATCH_SIZE = 30;
 
-    // 1. Identifying Pending Sentences
-    let pendingIndices = transcript
+    // 1. Initialize local working data to avoid React's async state lag
+    let workingData = JSON.parse(JSON.stringify(transcript));
+    const updateGlobalState = (data) => {
+      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, data: [...data] } : f));
+    };
+
+    const pendingIndices = workingData
       .map((item, idx) => ({ item, idx }))
       .filter(x => !x.item.isAnalyzed)
       .map(x => x.idx);
@@ -839,7 +844,7 @@ const App = () => {
     }
 
     // --- PASS 1: FAST BATCH PASS ---
-    console.log(`[Stage 2] Starting Pass 1 (Fast Batch)...`);
+    console.log('[Stage 2] Starting Pass 1 (Fast Batch)...');
     const PARALLEL_BATCH_COUNT = 3;
     for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE * PARALLEL_BATCH_COUNT) {
       const batchPromises = [];
@@ -848,36 +853,26 @@ const App = () => {
         if (start >= pendingIndices.length) break;
 
         const batchIndices = pendingIndices.slice(start, start + BATCH_SIZE);
-        const batchData = batchIndices.map(idx => transcript[idx]);
+        const batchData = batchIndices.map(idx => workingData[idx]);
 
         batchPromises.push((async () => {
           try {
             const results = await analyzeSentences(batchData, apiKey, modelId);
-
-            // KEY-BASED MAPPING (More robust than Index)
-            setFiles(prev => {
-              const file = prev.find(f => f.id === fileId);
-              if (!file) return prev;
-              const newData = [...file.data];
-
-              results.forEach(res => {
-                // Find matching sentence by Timestamp (s) and Original (o)
-                const targetIdx = newData.findIndex(item =>
-                  !item.isAnalyzed &&
-                  (item.s === res.s || item.timestamp === res.s) &&
-                  (item.o === res.o || item.text === res.o)
-                );
-
-                if (targetIdx !== -1) {
-                  const sanitized = sanitizeData([res])[0];
-                  newData[targetIdx] = { ...newData[targetIdx], ...sanitized, isAnalyzed: true };
-                }
-              });
-
-              return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
+            results.forEach(res => {
+              const targetIdx = workingData.findIndex(item => 
+                 !item.isAnalyzed && 
+                 (item.s === res.s || item.timestamp === res.s) && 
+                 (item.o === res.o || item.text === res.o)
+              );
+              if (targetIdx !== -1) {
+                const sanitized = sanitizeData([res])[0];
+                const hasDetailedContent = sanitized.words && sanitized.words.length > 0;
+                workingData[targetIdx] = { ...workingData[targetIdx], ...sanitized, isAnalyzed: hasDetailedContent };
+              }
             });
+            updateGlobalState(workingData);
           } catch (err) {
-            console.warn(`[Pass 1] Batch starting at ${start} failed, will be handled in Pass 2.`);
+            console.warn('[Pass 1] Batch starting at ' + start + ' failed, scheduled for Pass 2 cleanup.');
           }
         })());
       }
@@ -887,83 +882,44 @@ const App = () => {
       }
     }
 
-    // --- PASS 2: DEEP SCAN (Retry holes) ---
-    console.log(`[Stage 2] Pass 1 finished. Starting Pass 2 (Deep Scan for holes)...`);
+    // --- PASS 2: DEEP SCAN (Recovery) ---
+    console.log('[Stage 2] Pass 1 finished. Starting Pass 2 (Deep Scan for holes)...');
+    let holes = workingData
+      .map((item, idx) => ({ item, idx }))
+      .filter(x => !x.item.isAnalyzed || !x.item.words || x.item.words.length === 0)
+      .map(x => x.idx);
 
-    // Refresh pending list from current state
-    let remainingIndices = [];
-    setFiles(prev => {
-      const file = prev.find(f => f.id === fileId);
-      if (file) {
-        remainingIndices = file.data
-          .map((item, idx) => ({ item, idx }))
-          .filter(x => !x.item.isAnalyzed)
-          .map(x => x.idx);
-      }
-      return prev;
-    });
-
-    if (remainingIndices.length > 0) {
-      console.log(`[Stage 2] Pass 2 identified ${remainingIndices.length} missing sentences. Retrying...`);
-
-      // Process remaining sentences in smaller batches or individually
-      // To save tokens and avoid safety filters, we do small 1:1 or 1:5 retries here
-      for (let i = 0; i < remainingIndices.length; i += 5) {
-        const batchIndices = remainingIndices.slice(i, i + 5);
-        const batchData = batchIndices.map(idx => {
-          // Get current text from files state directly to ensure fresh data
-          let currentData;
-          setFiles(prev => {
-            currentData = prev.find(f => f.id === fileId)?.data;
-            return prev;
-          });
-          return currentData[idx];
-        });
-
+    if (holes.length > 0) {
+      console.log('[Stage 2] Pass 2 identified ' + holes.length + ' missing sentences.');
+      for (let i = 0; i < holes.length; i += 5) {
+        const batchIndices = holes.slice(i, i + 5);
+        const batchData = batchIndices.map(idx => workingData[idx]);
         try {
           const results = await analyzeSentences(batchData, apiKey, modelId);
-          setFiles(prev => {
-            const file = prev.find(f => f.id === fileId);
-            const newData = [...file.data];
-            results.forEach(res => {
-              const targetIdx = newData.findIndex(item =>
-                !item.isAnalyzed &&
-                (item.s === res.s || item.timestamp === res.s) &&
-                (item.o === res.o || item.text === res.o)
-              );
-              if (targetIdx !== -1) {
-                const sanitized = sanitizeData([res])[0];
-                newData[targetIdx] = { ...newData[targetIdx], ...sanitized, isAnalyzed: true };
-              }
-            });
-            return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
+          results.forEach(res => {
+            const targetIdx = workingData.findIndex(item => 
+               (!item.isAnalyzed || !item.words || item.words.length === 0) && 
+               (item.s === res.s || item.timestamp === res.s) && 
+               (item.o === res.o || item.text === res.o)
+            );
+            if (targetIdx !== -1) {
+              const sanitized = sanitizeData([res])[0];
+              workingData[targetIdx] = { ...workingData[targetIdx], ...sanitized, isAnalyzed: true };
+            }
           });
         } catch (err) {
-          console.error(`[Pass 2] Critical fail for index ${batchIndices}:`, err);
+          console.error('[Pass 2] Critical error for chunk ' + batchIndices, err);
+          batchIndices.forEach(idx => { workingData[idx] = { ...workingData[idx], isAnalyzed: true }; });
         }
-        await new Promise(r => setTimeout(r, 1000));
+        updateGlobalState(workingData);
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
 
-    // FINAL STEP: Ensure nothing is left in "Analyzing" state
-    setFiles(prev => {
-      const file = prev.find(f => f.id === fileId);
-      if (!file) return prev;
-      const newData = file.data.map(item => ({ ...item, isAnalyzed: true }));
-
-      // Persistent Cache Final Sync
-      const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
-      try {
-        localStorage.setItem(cacheKey, JSON.stringify({
-          data: newData,
-          metadata: { name: file.file.name, size: file.file.size, lastModified: file.file.lastModified, savedAt: Date.now() }
-        }));
-      } catch (e) { }
-
-      return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
-    });
-
-    console.log(`[Stage 2] All stages completed for file ${fileId}.`);
+    // --- FINAL SYNC & 완료 처리 ---
+    workingData = workingData.map(item => ({ ...item, isAnalyzed: true }));
+    updateGlobalState(workingData);
+    console.log('[Stage 2] Full 2-Pass Analysis completed for file ' + fileId + '.');
   };
 
   const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
