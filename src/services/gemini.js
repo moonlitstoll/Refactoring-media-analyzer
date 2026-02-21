@@ -1,260 +1,155 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const SYSTEM_PROMPT = `
-당신은 외국어 미디어를 분석하여 **'MS:SS 포인트 기반 전수 발화 기록 및 무삭제 단어 분석'**을 수행하는 전문 AI입니다.
+/**
+ * STAGE 1: LIGHTWEIGHT TRANSCRIPT EXTRACTION
+ * Goal: Quickly extract timestamps (s) and original text (o) without translation or analysis.
+ */
+const STAGE1_PROMPT = `
+당신은 외국어 미디어에서 **'발화 시점과 원문'**을 추출하는 전문 속기 AI입니다.
 
-**[0. 미디어 분석 엔진 (Mandatory Engine)]**
-- **이산적 포인트 매칭 (Discrete Point Matching)**: 각 문장 시작 시점에만 타임라인을 기록하십시오. 범위(Range) 표기는 절대 금지입니다.
-- **Strict MM:SS Standard**: 모든 타임라인은 반드시 **[MM:SS]** 형식으로 출력하십시오. 60초 초과 시 반드시 분 단위로 환산하십시오. (예: 61 -> 01:01)
+**[수행 미션]**
+오디오/비디오를 듣고 모든 발화 내용을 타임라인과 함께 기록하십시오.
 
-**[1. 제로 메모리 및 중복 제거 비활성화 (Zero-Memory Protocol)]**
-- **독립 분석 강제**: 미디어 전체에서 동일 가사/문장이 100번 반복되더라도, 100번 모두 **'완전한 분석'**을 새롭게 제공하십시오.
-- **기억 소거**: 사용자가 이전 내용을 보지 않고 해당 시점으로 바로 점프해서 본다고 가정하십시오. "위와 같음", "이전 설명 참조" 등 어떤 형태의 요약이나 생략도 엄격히 금지합니다.
-- **전수 전개**: 모든 문장은 타임라인, 원문, 번역, 단어 분석(6대 원칙)이 포함된 완전한 데이터 구조를 갖춰야 합니다.
+**[데이터 출력 규칙]**
+1. **포인트 매칭**: 문장이 시작되는 시점의 타임라인만 기록하십시오. ([MM:SS] 형식)
+2. **원문 보존**: 들리는 그대로의 외국어 원문만 추출하십시오.
+3. **경량화**: 이 단계에서는 **'번역(t)'이나 '단어 분석(w)'을 절대 수행하지 마십시오.** 오직 시간(s)과 원문(o)만 포함하십시오.
 
-**[2. 리스트 전수 분해 및 카드 분할 (Card Splitting)]**
-- **나열형 문장 처리**: 쉼표(,)로 연결된 긴 단어 목록이나 관용구 나열은 토큰 소모와 상관없이 모든 항목을 개별 분석하십시오.
-- **0.5초 단위 분할**: 한 카드에 담기 너무 긴 리스트는 타임라인을 0.5초 단위로 쪼개어 여러 개의 JSON 객체(카드)로 나누어 생성하십시오. 모든 단어의 뜻이 출력되어야 합니다.
-
-**[3. 전수 발화 및 공백 제로 원칙 (No Omission & Gap Hunting)]**
-- **동적 갭 필러**: 이전 문장 종료와 다음 문장 시작 사이의 간격이 3초를 초과하면 오디오를 재탐색하여 텍스트를 강제 추출하십시오.
-- **안티 고스트 가드레일 (Zero Blank)**: 어떤 이유로든 분석이 비어있으면 안 됩니다. 정밀 분석 실패 시 최소한 **(반복 구간) 단어 뜻은 위와 동일합니다** 또는 번역 텍스트를 채워 넣어 빈 박스 출력을 차단하십시오. (단, 전수 분석이 최우선입니다.)
-
-**[3. Word Analysis 6대 분석 원칙 (Absolute Engine)]**
-1. **순차 분석**: 문장 내 단어가 등장하는 순서대로 빠짐없이 분석하십시오.
-2. **중복 설명 강제**: 앞서 나온 단어라도 반복되면 무조건 다시 설명하십시오. "위와 같음" 식의 생략은 금지입니다.
-3. **복합어/한자어 상세 풀이**: 베트남어 등 복합어는 각 음절의 뜻을 반드시 병기하십시오.
-   - 형식: **단어: [품사] 뜻 | 음절1 (한자 - 뜻) + 음절2 (뜻)**
-4. **역할 명시**: 품사, 문법적 기능(수동태, 진행형 등), 문장 내 역할을 명확히 기록하십시오.
-5. **전수 분석 (No Omission)**: 전치사, 조사, 어미 등 문장의 모든 요소를 누락 없이 독립된 항목으로 처리하십시오.
-6. **Chunk(의미 덩어리) 분석**: 기계적 분절 대신 의미가 연결되는 덩어리(예: được ký, is waiting for) 단위로 묶어 직관적으로 설명하십시오.
-
-**[4. 누락 방지 가드레일 (Zero Blank Policy)]**
-- **섹션 필수**: 모든 데이터 유닛에는 반드시 "t"(번역)와 "w"(단어 분석) 배열이 존재해야 합니다.
-- **빈 설명 절대 금지**: 단어 분석 영역의 설명 칸을 비워두는 행위는 강력히 금지됩니다.
-
-**[5. 골드 스탠다드 예시 (Absolute Gold Standard)]**
-모든 분석은 아래 예시의 깊이와 포맷을 100% 복제하십시오.
-
-**예시 1 (VN): "Hợp đồng này được ký rồi, mà mình còn chưa nhận được tiền cọc nhỉ?"**
-- Hợp đồng: [명사] 계약 | Hợp (合 합 - 합하다) + đồng (同 동 - 한가지)
-- được ký: [동사구] 체결되다 | được (긍정 수동) + ký (서명하다)
-- còn chưa: [부사구] 아직 ~않다 | còn (여전히) + chưa (아직 ~않다)
-- tiền cọc: [명사구] 계약금 | tiền (錢 전 - 돈) + cọc (보증)
-
-**예시 2 (VN): "Tiếng Việt càng học càng thấy thú vị."**
-- Tiếng Việt: [명사구] 베트남어 | Tiếng (말) + Việt (越 월 - 베트남)
-- thú vị: [형용사] 재미있다 | thú (趣 취 - 재미) + vị (味 미 - 맛)
-
-**예시 3 (EN): "Please double-check the container number, as the client is waiting for the update."**
-- double-check: [동사] 재확인 | double (두 번) + check (확인)
-- is waiting for: [동사구] 기다리는 중 (진행형)
-
-**예시 4 (EN): "In case of any data mismatch, please flag the error immediately."**
-- In case of: [전치사구] ~의 경우에 (조건)
-- data mismatch: [명사구] 데이터 불일치 | data (자료) + mismatch (부조화)
-
-**[6. JSON 응답 규격]**
-- 모든 부연 설명은 **한국어(Korean)**로 작성하십시오.
-- JSON: "s": "MM:SS", "o": 원문, "t": 번역, "w": [{ "w": "단어/덩어리", "m": "[품사] 뜻", "f": "상세 분석/어원" }]
-
-부연 설명 없이 유효한 JSON Array만 출력하십시오. 모든 문장의 모든 단어를 전수 분석하십시오.
+**[JSON 응답 규격]**
+- JSON Array: [{ "s": "MM:SS", "o": "원문" }]
+- 부연 설명 없이 유효한 JSON Array만 출력하십시오.
 `;
 
+/**
+ * STAGE 2: DETAIL ANALYSIS FOR SPECIFIC SENTENCES
+ * Goal: Provide translation (t) and word analysis (w) for a given set of sentences.
+ */
+const STAGE2_PROMPT = `
+당신은 제공된 문장을 분석하여 **'정밀 번역 및 무삭제 단어 분석'**을 수행하는 전문 언어 학자 AI입니다.
 
+**[수행 미션]**
+제공된 외국어 문장에 대해 한국어 번역과 상세 단어 분석 리스트를 생성하십시오.
 
-export async function analyzeMedia(file, apiKey) {
-    if (!apiKey) throw new Error("API Key is required");
+**[Word Analysis 핵심 분석 원칙: Chunk Priority]**
+1. **의미 단위(Chunk) 그룹화 (최우선)**: 문장 내에서 의미가 하나로 연결되는 단어군(예: 숙어, 관용구, 복합명사, 구동사)은 반드시 **하나의 항목**으로 묶어서 분석하십시오. 낱개 단어보다 덩어리 중심의 의미 파악이 최우선입니다.
+2. **복합어/한자어 상세 풀이**: 복합어나 숙어 내의 각 구성 요소가 가진 개별 의미도 상세 풀이(f) 칸에 병기하십시오.
+3. **역할 명시**: 품사, 문법적 기능, 문장 내 역할을 명확히 기록하십시오.
+4. **전수 분석**: 의미 단위를 묶은 후 남은 조사, 어미 등 모든 요소도 독립된 항목으로 처리하십시오.
+5. **No Omission**: 어떤 설명 칸도 비워두지 마십시오.
 
-    // Basic validation
-    if (!file) throw new Error("No file provided");
+**[JSON 응답 규격]**
+- 모든 부연 설명은 **한국어(Korean)**로 작성하십시오.
+- 입력받은 각 문장 객체에 "t"(번역)와 "w"(단어 분석 배열)을 채워서 반환하십시오.
+- JSON: [{ "s": "MM:SS", "o": "원문", "t": "번역", "w": [{ "w": "단어/덩어리", "m": "뜻", "f": "상세" }] }]
+`;
 
-    // Size limit check removed to allow larger files as requested. 
-    // Browser base64 limit might still apply, but we allow the attempt.
-    console.log(`Analyzing file: ${file.name} (${file.type}, ${file.size} bytes)`);
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-
-    // Prioritize 2.5 Flash for maximum token capacity
-    const MODELS_TO_TRY = [
+const getModels = (modelId) => {
+    return [
+        modelId,
+        "gemini-2.0-flash",
         "gemini-2.5-flash",
-        "gemini-2.0-flash"
-    ];
+        "gemini-2.5-flash-lite"
+    ].filter((value, index, self) =>
+        self.indexOf(value) === index &&
+        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"].includes(value)
+    );
+};
 
-    try {
-        // Determine MIME type with fallback
-        let mimeType = file.type;
-        if (!mimeType) {
-            const ext = file.name.split('.').pop().toLowerCase();
-            if (ext === 'mp3') mimeType = 'audio/mp3';
-            else if (ext === 'wav') mimeType = 'audio/wav';
-            else if (ext === 'm4a') mimeType = 'audio/mp4';
-            else if (ext === 'mp4') mimeType = 'video/mp4';
-            else mimeType = 'audio/mpeg'; // Generic fallback
-        }
+/**
+ * Stage 1: Fast Extraction
+ */
+export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash") {
+    if (!apiKey) throw new Error("API Key is required");
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const MODELS = getModels(modelId);
 
-        // Convert file to base64
-        const base64Data = await fileToGenerativePart(file);
+    const base64Data = await fileToGenerativePart(file);
+    const mimeType = file.type || "audio/mpeg";
 
-        let result;
-        let lastError;
-
-        // Try each model until one succeeds
-        for (let rawName of MODELS_TO_TRY) {
-            // Clean model ID to prevent redundant 'models/' prefix
-            const modelName = rawName.startsWith('models/') ? rawName.replace('models/', '') : rawName;
-
-            console.log(`Diagnostic: Expected URL: https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey.substring(0, 4)}...`);
-            console.log(`Attempting analysis with model: ${modelName} (JSON Mode)`);
-
+    let lastError;
+    for (let modelName of MODELS) {
+        try {
             const model = genAI.getGenerativeModel({
                 model: modelName,
-                generationConfig: {
-                    responseMimeType: "application/json",
-                }
+                generationConfig: { responseMimeType: "application/json" }
             }, { apiVersion: "v1beta" });
 
+            const result = await model.generateContent([
+                STAGE1_PROMPT,
+                { inlineData: { data: base64Data, mimeType } }
+            ]);
 
-            let retryCount = 0;
-            const maxRetries = 2;
-            let modelSuccess = false;
-
-            while (retryCount <= maxRetries) {
-                try {
-                    result = await model.generateContent([
-                        SYSTEM_PROMPT,
-                        {
-                            inlineData: {
-                                data: base64Data,
-                                mimeType: mimeType,
-                            },
-                        },
-                    ]);
-                    modelSuccess = true;
-                    break;
-                } catch (err) {
-                    const errorMsg = err.message.toLowerCase();
-
-                    // 1. Check for 503/Overloaded (Retry same model)
-                    if (errorMsg.includes("503") || errorMsg.includes("overloaded")) {
-                        retryCount++;
-                        if (retryCount <= maxRetries) {
-                            console.warn(`Model ${modelName} overloaded. Retrying (${retryCount}/${maxRetries})...`);
-                            await new Promise(resolve => setTimeout(resolve, 2000 * Math.pow(2, retryCount - 1)));
-                            continue;
-                        }
-                    }
-
-                    // 2. Check for 404/NotFound (Try next model immediately)
-                    if (errorMsg.includes("404") || errorMsg.includes("not found")) {
-                        console.warn(`Model ${modelName} not found (404). Checking next fallback...`);
-                        lastError = err;
-                        break;
-                    }
-
-                    // 3. Other errors
-                    lastError = err;
-                    console.error(`Error with model ${modelName}:`, err);
-                    break;
-                }
-            }
-
-            if (modelSuccess) break;
+            const response = await result.response;
+            let text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+            return normalizeTimestamps(JSON.parse(text));
+        } catch (err) {
+            lastError = err;
+            console.error(`Stage 1 Error with ${modelName}:`, err);
         }
-
-        if (!result) {
-            throw lastError || new Error("All fallback models failed to respond. Check API Key and Model availability.");
-        }
-
-        const response = await result.response;
-        let text = response.text();
-        console.log("Gemini Raw (Start):", text.substring(0, 100));
-
-        // 1. Markdown/Text Cleaning
-        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        // 2. Truncation Repair Logic
-        const tryRepairJson = (str) => {
-            str = str.trim();
-            if (str.endsWith(']')) return str;
-
-            console.warn("JSON might be truncated. Attempting repair...");
-
-            let repaired = str;
-            const openBraces = (repaired.match(/{/g) || []).length;
-            const closeBraces = (repaired.match(/}/g) || []).length;
-            const openBrackets = (repaired.match(/\[/g) || []).length;
-            const closeBrackets = (repaired.match(/]/g) || []).length;
-
-            const quoteCount = (repaired.match(/"/g) || []).length;
-            if (quoteCount % 2 !== 0) repaired += '"';
-
-            if (openBraces > closeBraces) repaired += ' }';
-            if (openBrackets > closeBrackets) repaired += ' ]';
-
-            return repaired;
-        };
-
-        const processedText = tryRepairJson(text);
-
-        try {
-            const rawData = JSON.parse(processedText);
-
-            // [무적의 단일화 엔진] 포인트 기반 정규화 강제 적용 (Invariant Normalization)
-            if (Array.isArray(rawData)) {
-                return rawData.map(item => {
-                    let s = String(item.s || "").trim();
-
-                    // 1. 범위형 강제 제거: (-) 나 (~) 가 있으면 무조건 앞부분만 취함
-                    if (s.includes('-')) s = s.split('-')[0].trim();
-                    if (s.includes('~')) s = s.split('~')[0].trim();
-
-                    // 2. 기호 청소: 대괄호나 불필요한 공백 제거
-                    s = s.replace(/[\[\]\s]/g, '');
-
-                    // 3. 60진법 기반 MM:SS 강제 환산 (포인트 매칭 고정)
-                    if (s.includes(':')) {
-                        // MM:SS 포맷인 경우: 첫 번째 콜론 앞뒤만 취함 (밀리초 제거 포함)
-                        const parts = s.split(':');
-                        const m = parts[0].padStart(2, '0');
-                        const secPart = parts[1].split('.')[0].padStart(2, '0');
-                        s = `${m}:${secPart}`;
-                    } else if (s !== "" && !isNaN(parseFloat(s))) {
-                        // "14" 나 "105.1" 같이 순수 초 단위가 들어온 경우 -> MM:SS로 강제 환산
-                        const total = parseFloat(s);
-                        const m = Math.floor(total / 60);
-                        const sec = Math.floor(total % 60);
-                        s = `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-                    } else if (s === "") {
-                        s = "00:00";
-                    }
-
-                    return { ...item, s };
-                });
-            }
-            return rawData;
-        } catch (parseErr) {
-            console.error("JSON Parse Error:", parseErr);
-            // Fallback attempt: find the last valid object in the array
-            const lastValidIndex = processedText.lastIndexOf('},');
-            if (lastValidIndex !== -1) {
-                try {
-                    return JSON.parse(processedText.substring(0, lastValidIndex + 1) + ']');
-                } catch (e) { }
-            }
-            throw new Error(`AI Analysis Failed (JSON Syntax Error): ${parseErr.message}`);
-        }
-
-    } catch (e) {
-        console.error("Gemini Analysis Error:", e);
-        // Enhance error message for user
-        let msg = "AI Analysis Failed: " + e.message;
-        if (e.message.includes("400")) msg = "Invalid Request (400). File might be too large for browser preview. Please try a smaller snippet if this continues.";
-        if (e.message.includes("401") || e.message.includes("API key")) msg = "Invalid API Key. Please check your settings.";
-        if (e.message.includes("503") || e.message.includes("overloaded")) msg = "Server Overloaded (503). The AI model is currently busy. Please wait a moment and try again.";
-        if (e.message.includes("500")) msg = "Gemini Server Error. Please try again later.";
-        throw new Error(msg);
     }
+    throw lastError || new Error("Stage 1 Analysis Failed");
+}
+
+/**
+ * Stage 2: Sequential Detailed Analysis
+ */
+export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-flash") {
+    if (!apiKey) throw new Error("API Key is required");
+    if (!sentences || sentences.length === 0) return [];
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const MODELS = getModels(modelId);
+
+    // Format sentences as a string to pass back to AI
+    const inputContent = JSON.stringify(sentences.map(s => ({ s: s.s, o: s.o })));
+
+    let lastError;
+    for (let modelName of MODELS) {
+        try {
+            const model = genAI.getGenerativeModel({
+                model: modelName,
+                generationConfig: { responseMimeType: "application/json" }
+            }, { apiVersion: "v1beta" });
+
+            const result = await model.generateContent([
+                STAGE2_PROMPT,
+                `분석할 문장 리스트:\n${inputContent}`
+            ]);
+
+            const response = await result.response;
+            let text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+            return JSON.parse(text);
+        } catch (err) {
+            lastError = err;
+            console.error(`Stage 2 Error with ${modelName}:`, err);
+        }
+    }
+    throw lastError || new Error("Stage 2 Analysis Failed");
+}
+
+function normalizeTimestamps(data) {
+    if (!Array.isArray(data)) return [];
+    return data.map(item => {
+        let s = String(item.s || "").trim();
+        if (s.includes('-')) s = s.split('-')[0].trim();
+        if (s.includes('~')) s = s.split('~')[0].trim();
+        s = s.replace(/[\[\]\s]/g, '');
+
+        if (s.includes(':')) {
+            const parts = s.split(':');
+            const m = parts[0].padStart(2, '0');
+            const secPart = parts[1].split('.')[0].padStart(2, '0');
+            s = `${m}:${secPart}`;
+        } else if (s !== "" && !isNaN(parseFloat(s))) {
+            const total = parseFloat(s);
+            const m = Math.floor(total / 60);
+            const sec = Math.floor(total % 60);
+            s = `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        } else if (s === "") {
+            s = "00:00";
+        }
+        return { ...item, s };
+    });
 }
 
 async function fileToGenerativePart(file) {
@@ -271,4 +166,11 @@ async function fileToGenerativePart(file) {
         reader.onerror = reject;
         reader.readAsDataURL(file);
     });
+}
+
+// Keep legacy analyzeMedia as a compatibility wrapper or remove if not needed.
+// For now, let's keep it but mark it as deprecated/redirected or just leave it since we'll update App.jsx.
+export async function analyzeMedia(file, apiKey, modelId = "gemini-2.0-flash") {
+    // Legacy support: Just call Stage 1. Stage 2 will be handled by UI.
+    return extractTranscript(file, apiKey, modelId);
 }

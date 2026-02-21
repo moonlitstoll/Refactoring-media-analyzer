@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronUp, FileAudio, FileVideo, Plus, Trash2,
   SkipBack, SkipForward, Clock, History, MoreVertical, XCircle, Home
 } from 'lucide-react';
-import { analyzeMedia } from './services/gemini';
+import { extractTranscript, analyzeSentences } from './services/gemini';
 import { mediaStore } from './utils/MediaStore';
 
 // Error Boundary Component
@@ -72,7 +72,7 @@ const TranscriptItem = memo(({
 
     if (shouldScroll && itemRef.current) {
       itemRef.current.scrollIntoView({
-        behavior: isManualJump ? 'smooth' : 'smooth',
+        behavior: 'auto',
         block: 'start'
       });
     }
@@ -135,6 +135,20 @@ const TranscriptItem = memo(({
         {/* Detailed Analysis Section */}
         <div className={`overflow-hidden transition-all duration-500 ease-in-out ${showAnalysis ? 'max-h-[2000px] opacity-100 mt-1 pt-1 border-t border-slate-100' : 'max-h-0 opacity-0 mt-0 pt-0'}`}>
 
+          {/* Stage 2 Loading State */}
+          {!item.isAnalyzed && (
+            <div className="py-4 px-2 space-y-3 animate-pulse">
+              <div className="h-4 bg-slate-100 rounded-md w-3/4" />
+              <div className="space-y-2">
+                <div className="h-3 bg-slate-50 rounded-md w-full" />
+                <div className="h-3 bg-slate-50 rounded-md w-5/6" />
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                <Clock size={12} className="animate-spin" /> Analyzing Sentence Details...
+              </div>
+            </div>
+          )}
+
           {/* Translation (Always show if showTranslations is true or analysis is expanded) */}
           {(showTranslations || showAnalysis) && item.translation && (
             <div className={`rounded-xl px-3 py-2 border transition-colors duration-300 mb-2 ${showAnalysis ? 'bg-indigo-50/80 border-indigo-100' : 'bg-slate-50/50 border-slate-100'}`}>
@@ -175,6 +189,7 @@ const TranscriptItem = memo(({
 
 const App = () => {
   const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || '');
+  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
   const BUFFER_SECONDS = 0.8; // Audio Buffer (0.8s)
 
   // Multi-file state
@@ -186,7 +201,7 @@ const App = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(parseFloat(localStorage.getItem('miniapp_playback_rate')) || 1.0);
   const [isDragging, setIsDragging] = useState(false);
-  const [loopingSentenceIdx, setLoopingSentenceIdx] = useState(null);
+  const [isGlobalLoopActive, setIsGlobalLoopActive] = useState(localStorage.getItem('miniapp_loop_active') === 'true');
   const [isPlaying, setIsPlaying] = useState(false);
 
 
@@ -208,7 +223,8 @@ const App = () => {
 
   const videoRef = useRef(null);
   const activeIdxRef = useRef(null);
-  const loopingSentenceIdxRef = useRef(null);
+  const isGlobalLoopActiveRef = useRef(isGlobalLoopActive);
+  const loopTargetIdxRef = useRef(null); // [Phase 4] 루프 고정 타겟 인덱스
 
   // Derived active file
   const activeFile = files.find(f => f.id === activeFileId);
@@ -327,26 +343,31 @@ const App = () => {
         }
 
         return {
+          s: timestamp,
           timestamp,
           seconds,
           startSeconds, // Explicit float for sync
           endSeconds,
+          o: text,
           text,
           translation,
           patterns,
-          words,
-          isAnalyzed: !!(item.p || item.patterns || item.w || item.words)
+          words: item.w || item.words || [],
+          // 판정 기준 강화: 상세 단어 분석(w/words)이 실질적으로 존재해야 완료된 것으로 간주
+          isAnalyzed: item.isAnalyzed || (item.w && item.w.length > 0) || (item.words && item.words.length > 0)
         };
       })
       .sort((a, b) => a.startSeconds - b.startSeconds);
   };
 
   // Sync ref
-  useEffect(() => { loopingSentenceIdxRef.current = loopingSentenceIdx; }, [loopingSentenceIdx]);
+  useEffect(() => { isGlobalLoopActiveRef.current = isGlobalLoopActive; }, [isGlobalLoopActive]);
 
-  const saveApiKey = (key) => {
+  const saveConfiguration = (key, model) => {
     localStorage.setItem('miniapp_gemini_key', key);
+    localStorage.setItem('miniapp_gemini_model', model);
     setApiKey(key);
+    setSelectedModel(model);
     setShowSettings(false);
   };
 
@@ -481,30 +502,28 @@ const App = () => {
     }
   }, []);
 
-  const toggleLoop = useCallback((index) => {
+  const toggleLoop = useCallback(() => {
     triggerManualScroll();
-
-    setLoopingSentenceIdx(prev => {
-      const next = prev === index ? null : index;
+    setIsGlobalLoopActive(prev => {
+      const next = !prev;
+      localStorage.setItem('miniapp_loop_active', next.toString());
+      if (next) {
+        // 루프가 켜질 때 현재 인덱스를 고정
+        loopTargetIdxRef.current = activeIdxRef.current;
+      }
       if (videoRef.current) {
-        videoRef.current.loop = next === null;
+        // [Phase 4] 한곡 반복 수정: 한문장 반복이 켜지면 네이티브 루프(한곡 반복)는 꺼야 함
+        videoRef.current.loop = !next;
       }
       return next;
     });
-
-    if (loopingSentenceIdx !== index) {
-      if (activeFile?.data?.[index]) {
-        // Transcript Time -> Audio Time: T - BUFFER
-        seekTo(Math.max(0, activeFile.data[index].seconds - BUFFER_SECONDS));
-      }
-    }
-  }, [loopingSentenceIdx, seekTo, activeFile, triggerManualScroll]);
+  }, [triggerManualScroll]);
 
   const jumpToSentence = useCallback((index) => {
     if (activeFile?.data && index >= 0 && index < activeFile.data.length) {
       triggerManualScroll();
-      setLoopingSentenceIdx(null);
-      // Play with Buffer: T - 0.8s
+      // Global Loop 루프 타겟 업데이트
+      loopTargetIdxRef.current = index;
       seekTo(Math.max(0, activeFile.data[index].seconds - BUFFER_SECONDS));
     }
   }, [seekTo, activeFile, triggerManualScroll]);
@@ -549,7 +568,8 @@ const App = () => {
     const v = videoRef.current;
     if (!v || !activeFile?.data) return;
 
-    v.loop = loopingSentenceIdxRef.current === null;
+    // [Phase 4] 한곡 반복 수정: 한문장 반복이 꺼져있을 때만 전체 반복(native loop) 활성화
+    v.loop = !isGlobalLoopActive;
 
     const runSync = () => {
       if (!v) return;
@@ -559,28 +579,53 @@ const App = () => {
       const data = activeFile.data;
       if (!data || data.length === 0) return;
 
-      const calculatedIdx = findActiveIndex(now, data);
-      const loopIdx = loopingSentenceIdxRef.current;
+      const actualIdx = findActiveIndex(now, data);
 
-      // FOCUS LOCK: Prioritize loopIdx for absolute stability during repeat
-      const actualIdx = (loopIdx !== null) ? loopIdx : calculatedIdx;
+      // Loop Handling (Global Mode)
+      if (isGlobalLoopActiveRef.current) {
+        // [Phase 4] 루프 락(Loop Lock): 지정된 loopTargetIdxRef를 기반으로 반복 처리
+        let targetIdx = loopTargetIdxRef.current;
 
-      if (actualIdx !== activeIdxRef.current) {
-        activeIdxRef.current = actualIdx;
-        setActiveSentenceIdx(actualIdx);
-      }
+        // 만약 타겟이 없으면 현재 실시간 인덱스로 초기화
+        if (targetIdx === null) {
+          targetIdx = actualIdx;
+          loopTargetIdxRef.current = actualIdx;
+        }
 
-      // Loop Handling
-      if (loopIdx !== null && data[loopIdx]) {
-        const item = data[loopIdx];
-        const start = Math.max(0, item.seconds - BUFFER_SECONDS);
-        const end = (loopIdx < data.length - 1)
-          ? data[loopIdx + 1].seconds + BUFFER_SECONDS
-          : v.duration + BUFFER_SECONDS;
+        if (data[targetIdx]) {
+          const item = data[targetIdx];
+          const start = Math.max(0, item.seconds - 1.0);
+          const nextItem = data[targetIdx + 1];
+          const end = nextItem
+            ? Math.min(nextItem.seconds, item.seconds + 5.0) + 1.0
+            : (v.duration || 999999);
 
-        if (v.currentTime >= end - 0.1 || v.ended) {
-          v.currentTime = start;
-          v.play().catch(() => { });
+          // [Phase 4] 수동 시크(Seek) 대응: 사용자가 루프 범위 밖으로 강제 이동했다면 루프 타겟 재설정
+          if (v.currentTime < start - 2.0 || v.currentTime > end + 2.0) {
+            loopTargetIdxRef.current = actualIdx;
+            return;
+          }
+
+          // 1. 루프 범위 체크 및 되돌리기
+          if (v.currentTime >= end - 0.1 || v.ended) {
+            v.currentTime = start;
+            v.play().catch(() => { });
+            return;
+          }
+
+          // 2. 루프 중 UI 하이라이트 강제 고정 (버퍼 구간에서도 해당 문장이 활성 상태로 보이게 함)
+          if (activeIdxRef.current !== targetIdx) {
+            activeIdxRef.current = targetIdx;
+            setActiveSentenceIdx(targetIdx);
+          }
+        }
+      } else {
+        // 루프가 아닐 때만 정상 실시간 인덱스 업데이트
+        if (actualIdx !== activeIdxRef.current) {
+          activeIdxRef.current = actualIdx;
+          setActiveSentenceIdx(actualIdx);
+          // 루프가 꺼져있을 때도 타겟 인덱스는 현재 위치를 따라가게 함
+          loopTargetIdxRef.current = actualIdx;
         }
       }
     };
@@ -599,7 +644,7 @@ const App = () => {
       v.removeEventListener('playing', runSync);
       clearInterval(pulseId);
     };
-  }, [activeFile, findActiveIndex]);
+  }, [activeFile, findActiveIndex, isGlobalLoopActive]);
 
   // Reset switching state when active file changes
   useEffect(() => {
@@ -634,7 +679,7 @@ const App = () => {
       const currentIdx = activeSentenceIdx; // Use the globally calculated active index
 
       switch (e.code) {
-        case 'Enter': if (currentIdx !== -1) toggleLoop(currentIdx); break;
+        case 'Enter': toggleLoop(); break;
         case 'ArrowLeft':
           if (data.length > 0) {
             const idx = currentIdx !== -1 ? currentIdx : 0;
@@ -663,7 +708,7 @@ const App = () => {
     activeIdxRef.current = -1; // CRITICAL: Reset the ref so the engine detects the first update
     setCurrentTime(0);
     setIsPlaying(false);
-    setLoopingSentenceIdx(null);
+    // isGlobalLoopActive stays as is (Global Setting)
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.currentTime = 0;
@@ -722,19 +767,25 @@ const App = () => {
 
           let rawData;
           try {
-            rawData = await analyzeMedia(fItem.file, apiKey);
+            // STEP 1: Fast Extraction (Stage 1)
+            rawData = await extractTranscript(fItem.file, apiKey, selectedModel);
           } catch (apiError) {
-            throw new Error(`API Error: ${apiError.message}`);
+            throw new Error(`API Error (Stage 1): ${apiError.message}`);
           }
 
-          if (!rawData) throw new Error("Received empty data from API");
+          if (!rawData) throw new Error("Received empty data from Stage 1 API");
 
           const data = sanitizeData(rawData);
 
           if (data.length === 0) {
-            throw new Error("Analysis returned no valid text data.");
+            throw new Error("Stage 1 extraction returned no valid text data.");
           }
 
+          // Show the transcript immediately after Stage 1
+          setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, data: data, isAnalyzing: false } : p));
+
+          // [Phase 4] 히스토리 미표시 수정: 1단계 완료 즉시 중간 저장
+          const cacheKey = `gemini_analysis_${fItem.file.name}_${fItem.file.size}`;
           try {
             const cacheData = {
               data: data,
@@ -743,17 +794,19 @@ const App = () => {
                 size: fItem.file.size,
                 type: fItem.file.type,
                 lastModified: fItem.file.lastModified,
-                savedAt: Date.now()
+                savedAt: Date.now(),
+                status: 'extracted' // 대사 추출됨 상태 표기
               }
             };
             localStorage.setItem(cacheKey, JSON.stringify(cacheData));
-          } catch (e) {
-            console.warn("Quota exceeded or failed to save to localStorage", e);
-          }
+            // 히스토리 목록 강제 갱신 트리거
+            setCacheKeys(Object.keys(localStorage).filter(k => k.startsWith('gemini_analysis_')));
+          } catch (e) { }
 
-          setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, data: data, isAnalyzing: false } : p));
+          // STEP 2: Automatic Sequential Detail Analysis (Stage 2)
+          runStage2(fItem.id, data, apiKey, selectedModel);
 
-          // Save media to store after successful analysis
+          // Save media to store after successful Stage 1
           try {
             await mediaStore.saveFile(fItem.file);
           } catch (storageError) {
@@ -765,6 +818,86 @@ const App = () => {
         setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, error: "Analysis failed: " + err.message, isAnalyzing: false } : p));
       }
     });
+  };
+
+  /**
+   * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
+   * Process sentences in batches of 30 to prevent JSON corruption while remaining efficient.
+   */
+  const runStage2 = async (fileId, transcript, apiKey, modelId) => {
+    console.log(`[Stage 2] Starting detailed analysis for file ${fileId}...`);
+    const BATCH_SIZE = 30;
+
+    // Only process items that haven't been analyzed yet
+    const pendingIndices = transcript
+      .map((item, idx) => ({ item, idx }))
+      .filter(x => !x.item.isAnalyzed)
+      .map(x => x.idx);
+
+    if (pendingIndices.length === 0) {
+      console.log("[Stage 2] No pending sentences to analyze.");
+      return;
+    }
+
+    // Process in batches
+    for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE) {
+      const batchIndices = pendingIndices.slice(i, i + BATCH_SIZE);
+
+      const batchData = batchIndices.map(idx => transcript[idx]);
+      console.log(`[Stage 2] Analyzing batch ${Math.floor(i / BATCH_SIZE) + 1} (${batchData.length} sentences)...`);
+
+      try {
+        const results = await analyzeSentences(batchData, apiKey, modelId);
+
+        // Update the files state with new data
+        setFiles(prev => {
+          const file = prev.find(f => f.id === fileId);
+          if (!file) return prev;
+
+          const newData = [...file.data];
+          results.forEach((res, resIdx) => {
+            const originalIdx = batchIndices[resIdx];
+            if (originalIdx !== undefined && newData[originalIdx]) {
+              const sanitized = sanitizeData([res])[0];
+              newData[originalIdx] = {
+                ...newData[originalIdx],
+                ...sanitized,
+                isAnalyzed: true
+              };
+            }
+          });
+
+          // Persistent Cache Update
+          const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
+          try {
+            const cacheData = {
+              data: newData,
+              metadata: {
+                name: file.file.name,
+                size: file.file.size,
+                type: file.file.type,
+                lastModified: file.file.lastModified,
+                savedAt: Date.now()
+              }
+            };
+            localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+          } catch (e) { }
+
+          return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
+        });
+
+        // Delay between batches to avoid rate limits
+        if (i + BATCH_SIZE < pendingIndices.length) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+      } catch (err) {
+        console.error(`[Stage 2] Batch analysis failed:`, err);
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+
+    console.log(`[Stage 2] Analysis completed for file ${fileId}.`);
   };
 
   const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
@@ -1021,9 +1154,11 @@ const App = () => {
                   )}
 
                   <span className={`text-base font-bold truncate group-hover:text-indigo-700 transition-colors ${isAnalyzing || isSwitchingFile ? 'text-slate-500 italic' : ''}`}>
-                    {isAnalyzing || isSwitchingFile
-                      ? `Analyzing... ${activeFile.file.name}`
-                      : activeFile.file.name
+                    {isAnalyzing
+                      ? `Extracting... ${activeFile.file.name}`
+                      : (activeFile.data && activeFile.data.some(d => !d.isAnalyzed)
+                        ? `Analyzing (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
+                        : activeFile.file.name)
                     }
                   </span>
                 </div>
@@ -1060,7 +1195,12 @@ const App = () => {
                     </div>
                     <div className="text-center">
                       <h3 className="text-lg font-bold text-slate-900">Analyzing {activeFile.file.name}...</h3>
-                      <p className="text-slate-500">Extracting speech, grammar, and nuances.</p>
+                      <p className="text-slate-500">
+                        {activeFile.data && activeFile.data.length > 0
+                          ? `Processing Sentence Details (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
+                          : "Extracting voice timeline using Gemini 2.5..."
+                        }
+                      </p>
                     </div>
                   </div>
                 ) : activeFile.error ? (
@@ -1076,7 +1216,7 @@ const App = () => {
                 ) : (
                   // KEY-SWITCHING IMPLEMENTATION
                   // key={activeFileId} forces a full remount of this container when file changes
-                  <div key={activeFileId} className="space-y-2 min-h-[200px]">
+                  <div key={activeFileId} className="space-y-2 min-h-[200px] relative">
                     <ErrorBoundary>
                       {transcriptData.map((item, idx) => {
                         const isActive = idx === currentSentenceIdx;
@@ -1091,11 +1231,11 @@ const App = () => {
                             manualScrollNonce={manualScrollNonce}
                             seekTo={seekTo}
                             jumpToSentence={jumpToSentence}
-                            toggleLoop={() => toggleLoop(idx)}
+                            toggleLoop={toggleLoop}
                             onPrev={() => handlePrev(idx)}
                             onNext={() => handleNext(idx)}
-                            isLooping={loopingSentenceIdx === idx}
-                            isGlobalLooping={loopingSentenceIdxRef.current !== null}
+                            isLooping={isActive && isGlobalLoopActive}
+                            isGlobalLooping={isGlobalLoopActive}
                             showAnalysis={showAnalysis}
                             showTranslations={showTranslations}
                             toggleGlobalAnalysis={() => setShowAnalysis(!showAnalysis)}
@@ -1231,10 +1371,11 @@ const App = () => {
                     {/* Right: Loop Only (Translations removed) */}
                     <div className="flex items-center gap-1">
                       <button
-                        onClick={() => { if (currentSentenceIdx !== -1) toggleLoop(currentSentenceIdx); }}
-                        className={`p-1.5 rounded-lg border transition-all ${loopingSentenceIdxRef.current !== null ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-white text-slate-400 border-slate-200'}`}
+                        onClick={toggleLoop}
+                        className={`p-1.5 rounded-lg border transition-all ${isGlobalLoopActive ? 'bg-amber-50 text-amber-600 border-amber-200 shadow-sm' : 'bg-white text-slate-400 border-slate-200'}`}
+                        title="Toggle Global Sentence Loop"
                       >
-                        <Repeat size={16} />
+                        <Repeat size={16} className={isGlobalLoopActive ? 'animate-pulse' : ''} />
                       </button>
                     </div>
 
@@ -1254,6 +1395,30 @@ const App = () => {
                 <div>
                   <h3 className="text-xl font-bold text-slate-800">No active file</h3>
                   <p className="text-slate-500 mt-1">Upload or select a file to start the analysis.</p>
+                </div>
+
+                {/* Quick Model Selection on Home */}
+                <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-3">
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Default Gemini Model</p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {[
+                      { id: 'gemini-2.0-flash', name: 'Gemini 2 Flash' },
+                      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+                      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' }
+                    ].map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => saveConfiguration(apiKey, m.id)}
+                        className={`flex items-center justify-between px-4 py-2.5 rounded-xl border transition-all ${selectedModel === m.id
+                          ? 'bg-white border-indigo-200 text-indigo-700 font-bold shadow-sm'
+                          : 'bg-white/50 border-slate-100 text-slate-500 hover:bg-white'
+                          }`}
+                      >
+                        <span className="text-sm">{m.name}</span>
+                        {selectedModel === m.id && <Check size={14} className="text-indigo-600" />}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <button
                   onClick={() => setShowCacheHistory(true)}
@@ -1310,6 +1475,29 @@ const App = () => {
                   </p>
                 </div>
 
+                <div className="space-y-3 pt-4 border-t border-slate-50">
+                  <label className="text-sm font-bold text-slate-700">Gemini Model Selection</label>
+                  <div className="grid grid-cols-1 gap-2">
+                    {[
+                      { id: 'gemini-2.0-flash', name: 'Gemini 2 Flash' },
+                      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+                      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' }
+                    ].map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => setSelectedModel(m.id)}
+                        className={`flex items-center justify-between px-4 py-3 rounded-2xl border transition-all ${selectedModel === m.id
+                          ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-bold shadow-sm'
+                          : 'bg-white border-slate-100 text-slate-600 hover:bg-slate-50'
+                          }`}
+                      >
+                        <span className="text-sm">{m.name}</span>
+                        {selectedModel === m.id && <Check size={16} className="text-indigo-600" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="space-y-4 pt-4 border-t border-slate-50">
                   <div className="flex items-center justify-between">
                     <div>
@@ -1331,7 +1519,7 @@ const App = () => {
                   Cancel
                 </button>
                 <button
-                  onClick={() => saveApiKey(apiKey)}
+                  onClick={() => saveConfiguration(apiKey, selectedModel)}
                   className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-indigo-200"
                 >
                   Save Configuration
@@ -1362,6 +1550,7 @@ const App = () => {
               </div>
 
               <div className="flex-1 overflow-hidden flex flex-col bg-slate-50/50">
+
                 {/* Controls Area */}
                 <div className="p-3 sm:p-4 space-y-3">
                   {/* Upload Button */}
@@ -1439,7 +1628,10 @@ const App = () => {
                               <div className="min-w-0">
                                 <p className="text-base font-bold truncate text-indigo-900">{f.file.name}</p>
                                 <p className="text-xs font-medium mt-0.5 text-indigo-600 animate-pulse">
-                                  Analyzing...
+                                  {f.data && f.data.length > 0
+                                    ? `Analyzing (${f.data.filter(d => d.isAnalyzed).length}/${f.data.length})...`
+                                    : "Extracting Transcript..."
+                                  }
                                 </p>
                               </div>
                             </div>
@@ -1467,6 +1659,27 @@ const App = () => {
                             const name = key.replace('gemini_analysis_', '');
                             const isActive = activeFile?.file?.name === name; // Simple check by name
 
+                            // [Phase 4] 히스토리 상태 파싱
+                            let statusText = "CACHED";
+                            let progressText = "";
+                            let isFullyAnalyzed = false;
+
+                            try {
+                              const cachedData = JSON.parse(localStorage.getItem(key));
+                              if (cachedData && cachedData.data) {
+                                const total = cachedData.data.length;
+                                const analyzed = cachedData.data.filter(d => d.isAnalyzed).length;
+                                isFullyAnalyzed = analyzed === total;
+                                progressText = `${analyzed}/${total} Sentences`;
+
+                                if (cachedData.metadata?.status === 'extracted') {
+                                  statusText = "EXTRACTED";
+                                } else if (isFullyAnalyzed) {
+                                  statusText = "COMPLETED";
+                                }
+                              }
+                            } catch (e) { }
+
                             return (
                               <div
                                 key={key}
@@ -1484,9 +1697,17 @@ const App = () => {
                                   </div>
                                   <div className="min-w-0">
                                     <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{name}</p>
-                                    <p className={`text-xs font-medium mt-0.5 ${isActive ? 'text-indigo-600' : 'text-slate-400'}`}>
-                                      {isActive ? 'CURRENTLY ACTIVE' : 'CACHED VERSION'}
-                                    </p>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black tracking-tight ${isFullyAnalyzed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                                        }`}>
+                                        {statusText}
+                                      </span>
+                                      {progressText && (
+                                        <span className="text-[10px] font-medium text-slate-400">
+                                          {progressText}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
 
