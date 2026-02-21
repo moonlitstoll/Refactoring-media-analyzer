@@ -839,60 +839,73 @@ const App = () => {
       return;
     }
 
-    // Process in batches
-    for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE) {
-      const batchIndices = pendingIndices.slice(i, i + BATCH_SIZE);
+    // Process in batches (Up to 3 batches in parallel)
+    const PARALLEL_BATCH_COUNT = 3;
+    for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE * PARALLEL_BATCH_COUNT) {
+      const batchPromises = [];
 
-      const batchData = batchIndices.map(idx => transcript[idx]);
-      console.log(`[Stage 2] Analyzing batch ${Math.floor(i / BATCH_SIZE) + 1} (${batchData.length} sentences)...`);
+      for (let j = 0; j < PARALLEL_BATCH_COUNT; j++) {
+        const start = i + (j * BATCH_SIZE);
+        if (start >= pendingIndices.length) break;
 
-      try {
-        const results = await analyzeSentences(batchData, apiKey, modelId);
+        const batchIndices = pendingIndices.slice(start, start + BATCH_SIZE);
+        const batchData = batchIndices.map(idx => transcript[idx]);
 
-        // Update the files state with new data
-        setFiles(prev => {
-          const file = prev.find(f => f.id === fileId);
-          if (!file) return prev;
+        console.log(`[Stage 2] Launching Parallel Batch ${Math.floor(start / BATCH_SIZE) + 1} (${batchData.length} sentences)...`);
 
-          const newData = [...file.data];
-          results.forEach((res, resIdx) => {
-            const originalIdx = batchIndices[resIdx];
-            if (originalIdx !== undefined && newData[originalIdx]) {
-              const sanitized = sanitizeData([res])[0];
-              newData[originalIdx] = {
-                ...newData[originalIdx],
-                ...sanitized,
-                isAnalyzed: true
-              };
-            }
-          });
-
-          // Persistent Cache Update
-          const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
+        batchPromises.push((async () => {
           try {
-            const cacheData = {
-              data: newData,
-              metadata: {
-                name: file.file.name,
-                size: file.file.size,
-                type: file.file.type,
-                lastModified: file.file.lastModified,
-                savedAt: Date.now()
-              }
-            };
-            localStorage.setItem(cacheKey, JSON.stringify(cacheData));
-          } catch (e) { }
+            const results = await analyzeSentences(batchData, apiKey, modelId);
 
-          return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
-        });
+            // Update the files state with new data for this specific batch
+            setFiles(prev => {
+              const file = prev.find(f => f.id === fileId);
+              if (!file) return prev;
 
-        // Delay between batches to avoid rate limits
-        if (i + BATCH_SIZE < pendingIndices.length) {
-          await new Promise(r => setTimeout(r, 2000));
-        }
+              const newData = [...file.data];
+              results.forEach((res, resIdx) => {
+                const originalIdx = batchIndices[resIdx];
+                if (originalIdx !== undefined && newData[originalIdx]) {
+                  const sanitized = sanitizeData([res])[0];
+                  newData[originalIdx] = {
+                    ...newData[originalIdx],
+                    ...sanitized,
+                    isAnalyzed: true
+                  };
+                }
+              });
 
-      } catch (err) {
-        console.error(`[Stage 2] Batch analysis failed:`, err);
+              // Persistent Cache Update
+              const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
+              try {
+                const cacheData = {
+                  data: newData,
+                  metadata: {
+                    name: file.file.name,
+                    size: file.file.size,
+                    type: file.file.type,
+                    lastModified: file.file.lastModified,
+                    savedAt: Date.now()
+                  }
+                };
+                localStorage.setItem(cacheKey, JSON.stringify(cacheData));
+              } catch (e) { }
+
+              return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
+            });
+            return { success: true };
+          } catch (err) {
+            console.error(`[Stage 2] Batch starting at ${start} failed:`, err);
+            return { success: false, error: err };
+          }
+        })());
+      }
+
+      // Wait for the parallel group to complete
+      await Promise.all(batchPromises);
+
+      // Group delay to avoid hitting rate limits too hard
+      if (i + BATCH_SIZE * PARALLEL_BATCH_COUNT < pendingIndices.length) {
         await new Promise(r => setTimeout(r, 3000));
       }
     }
