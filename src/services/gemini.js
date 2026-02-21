@@ -67,50 +67,48 @@ const STAGE2_PROMPT = `
 `;
 
 const getModels = (modelId) => {
-    return [
-        modelId,
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite"
-    ].filter((value, index, self) =>
-        self.indexOf(value) === index &&
-        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"].includes(value)
-    );
+    const validModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2-flash"];
+    return [modelId].filter(m => validModels.includes(m));
 };
 
 /**
  * Stage 1: Fast Extraction
  */
-export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash") {
+export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flash") {
     if (!apiKey) throw new Error("API Key is required");
     const genAI = new GoogleGenerativeAI(apiKey);
-    const MODELS = getModels(modelId);
 
-    const base64Data = await fileToGenerativePart(file);
-    const mimeType = file.type || "audio/mpeg";
+    // Use the selected model (No more sequential retry as requested)
+    const modelName = getModels(modelId)[0] || "gemini-2.5-flash";
 
-    let lastError;
-    for (let modelName of MODELS) {
-        try {
-            const model = genAI.getGenerativeModel({
-                model: modelName,
-                generationConfig: { responseMimeType: "application/json" }
-            }, { apiVersion: "v1beta" });
+    try {
+        const base64Data = await fileToGenerativePart(file);
+        const mimeType = file.type || "audio/mpeg";
 
-            const result = await model.generateContent([
-                STAGE1_PROMPT,
-                { inlineData: { data: base64Data, mimeType } }
-            ]);
+        const model = genAI.getGenerativeModel({
+            model: modelName,
+            generationConfig: { responseMimeType: "application/json" }
+        }, { apiVersion: "v1beta" });
 
-            const response = await result.response;
-            let text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-            return normalizeTimestamps(JSON.parse(text));
-        } catch (err) {
-            lastError = err;
-            console.error(`Stage 1 Error with ${modelName}:`, err);
+        // Note: For very large files (>20MB), inlineData might fail.
+        // In the future, a direct fetch to the File API upload endpoint can be implemented here.
+        const result = await model.generateContent([
+            STAGE1_PROMPT,
+            { inlineData: { data: base64Data, mimeType } }
+        ]);
+
+        const response = await result.response;
+        let text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(text);
+        return normalizeTimestamps(parsed);
+    } catch (err) {
+        console.error(`Stage 1 Error with ${modelName}:`, err);
+        // Better error message for payload limit
+        if (err.message?.includes('fetch') || err.message?.includes('payload')) {
+            throw new Error(`File too large for direct analysis. Please try a shorter or lower-resolution file.`);
         }
+        throw err;
     }
-    throw lastError || new Error("Stage 1 Analysis Failed");
 }
 
 /**
