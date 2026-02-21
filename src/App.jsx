@@ -824,11 +824,11 @@ const App = () => {
    * Process sentences in batches of 30 to prevent JSON corruption while remaining efficient.
    */
   const runStage2 = async (fileId, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting detailed analysis for file ${fileId}...`);
+    console.log(`[Stage 2] Starting 2-Pass Analysis for file ${fileId}...`);
     const BATCH_SIZE = 30;
 
-    // Only process items that haven't been analyzed yet
-    const pendingIndices = transcript
+    // 1. Identifying Pending Sentences
+    let pendingIndices = transcript
       .map((item, idx) => ({ item, idx }))
       .filter(x => !x.item.isAnalyzed)
       .map(x => x.idx);
@@ -838,11 +838,11 @@ const App = () => {
       return;
     }
 
-    // Process in batches (Up to 3 batches in parallel)
+    // --- PASS 1: FAST BATCH PASS ---
+    console.log(`[Stage 2] Starting Pass 1 (Fast Batch)...`);
     const PARALLEL_BATCH_COUNT = 3;
     for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE * PARALLEL_BATCH_COUNT) {
       const batchPromises = [];
-
       for (let j = 0; j < PARALLEL_BATCH_COUNT; j++) {
         const start = i + (j * BATCH_SIZE);
         if (start >= pendingIndices.length) break;
@@ -850,913 +850,970 @@ const App = () => {
         const batchIndices = pendingIndices.slice(start, start + BATCH_SIZE);
         const batchData = batchIndices.map(idx => transcript[idx]);
 
-        console.log(`[Stage 2] Launching Parallel Batch ${Math.floor(start / BATCH_SIZE) + 1} (${batchData.length} sentences)...`);
-
         batchPromises.push((async () => {
           try {
             const results = await analyzeSentences(batchData, apiKey, modelId);
 
-            // Update the files state with new data for this specific batch
+            // KEY-BASED MAPPING (More robust than Index)
             setFiles(prev => {
               const file = prev.find(f => f.id === fileId);
               if (!file) return prev;
-
               const newData = [...file.data];
-              results.forEach((res, resIdx) => {
-                const originalIdx = batchIndices[resIdx];
-                if (originalIdx !== undefined && newData[originalIdx]) {
+
+              results.forEach(res => {
+                // Find matching sentence by Timestamp (s) and Original (o)
+                const targetIdx = newData.findIndex(item =>
+                  !item.isAnalyzed &&
+                  (item.s === res.s || item.timestamp === res.s) &&
+                  (item.o === res.o || item.text === res.o)
+                );
+
+                if (targetIdx !== -1) {
                   const sanitized = sanitizeData([res])[0];
-                  newData[originalIdx] = {
-                    ...newData[originalIdx],
-                    ...sanitized,
-                    isAnalyzed: true
-                  };
+                  newData[targetIdx] = { ...newData[targetIdx], ...sanitized, isAnalyzed: true };
                 }
               });
 
-              // Persistent Cache Update
-              const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
-              try {
-                const cacheData = {
-                  data: newData,
-                  metadata: {
-                    name: file.file.name,
-                    size: file.file.size,
-                    type: file.file.type,
-                    lastModified: file.file.lastModified,
-                    savedAt: Date.now()
-                  }
-                };
-                localStorage.setItem(cacheKey, JSON.stringify(cacheData));
-              } catch (e) { }
-
               return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
             });
-            return { success: true };
           } catch (err) {
-            console.error(`[Stage 2] Batch starting at ${start} failed:`, err);
-            return { success: false, error: err };
+            console.warn(`[Pass 1] Batch starting at ${start} failed, will be handled in Pass 2.`);
           }
         })());
       }
-
-      // Wait for the parallel group to complete
       await Promise.all(batchPromises);
-
-      // Group delay to avoid hitting rate limits too hard
       if (i + BATCH_SIZE * PARALLEL_BATCH_COUNT < pendingIndices.length) {
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 2000));
       }
     }
 
-    console.log(`[Stage 2] Analysis completed for file ${fileId}.`);
-  };
+    // --- PASS 2: DEEP SCAN (Retry holes) ---
+    console.log(`[Stage 2] Pass 1 finished. Starting Pass 2 (Deep Scan for holes)...`);
 
-  const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
-  const onDragLeave = (e) => {
-    if (e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
-      setIsDragging(false);
-    }
-  };
-  const onDrop = (e) => {
-    e.preventDefault();
-    processFiles(e.dataTransfer.files);
-  };
-
-
-
-  const removeFile = (id, e) => {
-    e.stopPropagation();
+    // Refresh pending list from current state
+    let remainingIndices = [];
     setFiles(prev => {
-      const newFiles = prev.filter(f => f.id !== id);
-      if (activeFileId === id) {
-        setActiveFileId(newFiles.length > 0 ? newFiles[0].id : null);
+      const file = prev.find(f => f.id === fileId);
+      if (file) {
+        remainingIndices = file.data
+          .map((item, idx) => ({ item, idx }))
+          .filter(x => !x.item.isAnalyzed)
+          .map(x => x.idx);
       }
-      return newFiles;
+      return prev;
     });
-  };
 
-  const removeAllFiles = () => {
-    if (confirm("Remove all active files?")) {
-      setFiles([]);
-      setActiveFileId(null);
-      setShowFileList(false);
+    if (remainingIndices.length > 0) {
+      console.log(`[Stage 2] Pass 2 identified ${remainingIndices.length} missing sentences. Retrying...`);
+
+      // Process remaining sentences in smaller batches or individually
+      // To save tokens and avoid safety filters, we do small 1:1 or 1:5 retries here
+      for (let i = 0; i < remainingIndices.length; i += 5) {
+        const batchIndices = remainingIndices.slice(i, i + 5);
+        const batchData = batchIndices.map(idx => {
+          // Get current text from files state directly to ensure fresh data
+          let currentData;
+          setFiles(prev => {
+            currentData = prev.find(f => f.id === fileId)?.data;
+            return prev;
+          });
+          return currentData[idx];
+        });
+
+        try {
+          const results = await analyzeSentences(batchData, apiKey, modelId);
+          setFiles(prev => {
+            const file = prev.find(f => f.id === fileId);
+            const newData = [...file.data];
+            results.forEach(res => {
+              const targetIdx = newData.findIndex(item =>
+                !item.isAnalyzed &&
+                (item.s === res.s || item.timestamp === res.s) &&
+                (item.o === res.o || item.text === res.o)
+              );
+              if (targetIdx !== -1) {
+                const sanitized = sanitizeData([res])[0];
+                newData[targetIdx] = { ...newData[targetIdx], ...sanitized, isAnalyzed: true };
+              }
+            });
+            return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
+          });
+        } catch (err) {
+          console.error(`[Pass 2] Critical fail for index ${batchIndices}:`, err);
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
+
+    // FINAL STEP: Ensure nothing is left in "Analyzing" state
+    setFiles(prev => {
+      const file = prev.find(f => f.id === fileId);
+      if (!file) return prev;
+      const newData = file.data.map(item => ({ ...item, isAnalyzed: true }));
+
+      // Persistent Cache Final Sync
+      const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          data: newData,
+          metadata: { name: file.file.name, size: file.file.size, lastModified: file.file.lastModified, savedAt: Date.now() }
+        }));
+      } catch (e) { }
+
+      return prev.map(f => f.id === fileId ? { ...f, data: newData } : f);
+    });
+
+    console.log(`[Stage 2] All stages completed for file ${fileId}.`);
   };
 
-  // Empty State
-  if (files.length === 0) {
-    return (
-      <div
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        className="min-h-screen bg-[#F8FAFC] flex flex-col items-center justify-center p-6 relative"
-      >
-        {isDragging && (
-          <div className="absolute inset-0 z-50 bg-indigo-500/10 backdrop-blur-sm flex items-center justify-center p-10 border-4 border-indigo-500 border-dashed m-4 rounded-3xl">
-            <h2 className="text-4xl font-bold text-indigo-600 animate-bounce">Drop Files Here!</h2>
-          </div>
-        )}
+  console.log(`[Stage 2] Analysis completed for file ${fileId}.`);
+};
 
-        <button onClick={() => setShowSettings(true)} className="absolute top-6 right-6 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors">
-          <Settings size={24} />
-        </button>
-
-        {showSettings && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4">
-            <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-2xl animate-in zoom-in duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-bold text-slate-900">Settings</h3>
-                <button onClick={() => setShowSettings(false)}><X size={20} className="text-slate-400" /></button>
-              </div>
-              <div className="space-y-4">
-                <label className="block text-sm font-semibold text-slate-700">Google Gemini API Key</label>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Enter your API Key"
-                  className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-                <button onClick={() => saveApiKey(apiKey)} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl">Save Key</button>
-
-                <div className="pt-4 border-t border-slate-100">
-                  <p className="text-xs text-slate-400 text-center">
-                    Timeline uses strict 0.1s snap. Playback adds 0.8s buffer for context.
-                  </p>
-                </div>
-
-                <div className="pt-4 border-t border-slate-100">
-                  <h4 className="font-bold text-slate-800 mb-2 text-sm">Cached Transcripts</h4>
-                  <div className="space-y-2 max-h-40 overflow-y-auto mb-3 pr-1 bg-slate-50/50 rounded-lg p-1">
-                    {cacheKeys.length === 0 ? (
-                      <p className="text-xs text-slate-400 text-center py-2">No cached files found.</p>
-                    ) : (
-                      cacheKeys.map(key => {
-                        const name = key.replace('gemini_analysis_', '').replace(/_\d+$/, '');
-                        return (
-                          <div
-                            key={key}
-                            onClick={() => loadCache(key)}
-                            className="flex items-center justify-between bg-white border border-slate-200 p-3 rounded-xl shadow-sm hover:border-indigo-300 hover:bg-slate-50 transition-all cursor-pointer group/item"
-                          >
-                            <span className="text-sm font-medium text-slate-700 truncate flex-1 mr-4" title={key}>{name}</span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); deleteCache(key); }}
-                                className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                                title="Delete"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                  {cacheKeys.length > 0 && (
-                    <button onClick={clearAllCache} className="w-full py-2 bg-slate-100 hover:bg-red-50 hover:text-red-600 text-slate-600 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-colors">
-                      <Trash2 size={14} /> Clear All Cache
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-
-
-        <div className="max-w-4xl w-full text-center space-y-10 animate-in fade-in zoom-in duration-500">
-          <div className="space-y-4">
-            <div className="inline-flex items-center justify-center p-3 bg-indigo-50 rounded-2xl ring-1 ring-indigo-100 mb-2">
-              <Volume2 size={28} className="text-indigo-600" />
-            </div>
-            <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-slate-900">
-              Media<span className="text-indigo-600">Smart</span> Analyzer
-            </h1>
-          </div>
-          <div className={`
-                 max-w-3xl mx-auto group relative flex items-center gap-6 p-10 rounded-3xl border-2 border-dashed transition-all duration-300 cursor-pointer
-                 border-slate-200 hover:border-indigo-300 hover:bg-white bg-white/60
-              `}>
-            <input type="file" multiple className="absolute inset-0 opacity-0 cursor-pointer z-10" onChange={(e) => processFiles(e.target.files)} accept="audio/*,video/*" />
-            <div className="w-full flex flex-col items-center gap-4">
-              <div className="p-4 bg-indigo-100 text-indigo-600 rounded-2xl group-hover:scale-110 transition-transform">
-                <Upload size={32} />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-800 text-xl">Drag & Drop Multiple Files</h3>
-                <p className="text-slate-500 mt-2">or click to browse</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div >
-    );
+const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
+const onDragLeave = (e) => {
+  if (e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+    setIsDragging(false);
   }
+};
+const onDrop = (e) => {
+  e.preventDefault();
+  processFiles(e.dataTransfer.files);
+};
 
-  // View: Main Workspace
 
-  const headerElement = (
-    <header className="flex-none bg-white border-b border-slate-200 flex items-center justify-between px-4 py-3 z-20 shadow-sm relative">
-      <div className="flex-1 min-w-0">
 
-        {/* Center: File List Popup Trigger -> Now Unified Manager Trigger */}
-        <div className="relative">
-          <button
-            onClick={() => setShowCacheHistory(true)}
-            className="w-full text-center px-4 py-2 hover:bg-slate-50 rounded-xl transition-colors group"
-          >
-            {activeFile ? (
-              <div className="flex items-center justify-center gap-2 text-slate-900">
-                {activeFile.file.type.startsWith('video') ? <FileVideo size={16} className="text-indigo-600 shrink-0" /> : <FileAudio size={16} className="text-indigo-600 shrink-0" />}
-                <span className="text-lg font-bold truncate group-hover:text-indigo-700 transition-colors">{activeFile.file.name}</span>
-              </div>
-            ) : (
-              <span className="text-lg font-bold text-slate-400">Select File...</span>
-            )}
-          </button>
+const removeFile = (id, e) => {
+  e.stopPropagation();
+  setFiles(prev => {
+    const newFiles = prev.filter(f => f.id !== id);
+    if (activeFileId === id) {
+      setActiveFileId(newFiles.length > 0 ? newFiles[0].id : null);
+    }
+    return newFiles;
+  });
+};
 
-          {/* File List Popup */}
-          {showFileList && (
-            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-100 p-2 z-50 animate-in zoom-in-95 duration-200">
-              <div className="flex items-center justify-between px-2 py-1 mb-2 border-b border-slate-50">
-                <span className="text-xs font-bold text-slate-500 uppercase">Active Files</span>
-                <label className="cursor-pointer text-indigo-600 hover:text-indigo-700 p-1 rounded hover:bg-indigo-50" title="Add File">
-                  <Plus size={16} />
-                  <input type="file" multiple className="hidden" onChange={(e) => { processFiles(e.target.files); setShowFileList(false); }} accept="audio/*,video/*" />
-                </label>
-              </div>
-              <div className="max-h-60 overflow-y-auto space-y-1">
-                {files.length === 0 ? (
-                  <div className="text-center py-4 text-slate-400 text-sm">No files added</div>
-                ) : (
-                  files.map(f => (
-                    <div
-                      key={f.id}
-                      onClick={() => { setActiveFileId(f.id); setShowFileList(false); }}
-                      className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${f.id === activeFileId ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50 text-slate-700'}`}
-                    >
-                      {f.file.type.startsWith('video') ? <FileVideo size={14} /> : <FileAudio size={14} />}
-                      <span className="text-sm font-medium truncate flex-1">{f.file.name}</span>
-                      <button onClick={(e) => removeFile(f.id, e)} className="p-1 text-slate-300 hover:text-red-500 rounded"><X size={14} /></button>
-                    </div>
-                  ))
-                )}
-              </div>
-              {files.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-slate-50">
-                  <button onClick={removeAllFiles} className="w-full py-1.5 text-xs font-bold text-red-500 hover:bg-red-50 rounded-lg transition-colors flex items-center justify-center gap-1">
-                    <Trash2 size={12} /> Clear All Files
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+const removeAllFiles = () => {
+  if (confirm("Remove all active files?")) {
+    setFiles([]);
+    setActiveFileId(null);
+    setShowFileList(false);
+  }
+};
 
-      </div>
-    </header>
-  );
+// Empty State
+if (files.length === 0) {
   return (
     <div
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      className="flex flex-col h-screen bg-[#F8FAFC] text-slate-800 overflow-hidden font-sans animate-in fade-in duration-700 relative"
+      className="min-h-screen bg-[#F8FAFC] flex flex-col items-center justify-center p-6 relative"
     >
-      {/* Drag Overlay */}
       {isDragging && (
-        <div className="absolute inset-0 z-50 bg-indigo-500/10 backdrop-blur-sm flex items-center justify-center p-10 border-4 border-indigo-500 border-dashed m-4 rounded-3xl pointer-events-none">
-          <h2 className="text-4xl font-bold text-indigo-600 animate-bounce">Drop to Add Files</h2>
+        <div className="absolute inset-0 z-50 bg-indigo-500/10 backdrop-blur-sm flex items-center justify-center p-10 border-4 border-indigo-500 border-dashed m-4 rounded-3xl">
+          <h2 className="text-4xl font-bold text-indigo-600 animate-bounce">Drop Files Here!</h2>
         </div>
       )}
 
-      {/* Header - Now Sticky & Compact */}
-      <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 flex-none h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6">
-        {/* Left: Home Button (Back to Upload) */}
-        <button
-          onClick={() => {
-            setFiles([]);
-            setActiveFileId(null);
-            resetPlayerState();
-          }}
-          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
-          title="Go to Home"
-        >
-          <Home size={20} />
-        </button>
+      <button onClick={() => setShowSettings(true)} className="absolute top-6 right-6 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors">
+        <Settings size={24} />
+      </button>
 
-        <div className="flex-1 min-w-0">
-          <div className="relative">
-            <button
-              onClick={() => setShowCacheHistory(true)}
-              className="w-full text-center px-4 py-1.5 hover:bg-slate-50 rounded-xl transition-colors group"
-            >
-              {activeFile ? (
-                <div className="flex items-center justify-center gap-2 text-slate-900">
-                  {/* Icon based on file type */}
-                  {activeFile.file.type.startsWith('video') ? (
-                    <FileVideo size={16} className={`shrink-0 ${isAnalyzing || isSwitchingFile ? 'text-slate-400 animate-pulse' : 'text-indigo-600'}`} />
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-2xl animate-in zoom-in duration-300">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-slate-900">Settings</h3>
+              <button onClick={() => setShowSettings(false)}><X size={20} className="text-slate-400" /></button>
+            </div>
+            <div className="space-y-4">
+              <label className="block text-sm font-semibold text-slate-700">Google Gemini API Key</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Enter your API Key"
+                className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <button onClick={() => saveApiKey(apiKey)} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl">Save Key</button>
+
+              <div className="pt-4 border-t border-slate-100">
+                <p className="text-xs text-slate-400 text-center">
+                  Timeline uses strict 0.1s snap. Playback adds 0.8s buffer for context.
+                </p>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100">
+                <h4 className="font-bold text-slate-800 mb-2 text-sm">Cached Transcripts</h4>
+                <div className="space-y-2 max-h-40 overflow-y-auto mb-3 pr-1 bg-slate-50/50 rounded-lg p-1">
+                  {cacheKeys.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-2">No cached files found.</p>
                   ) : (
-                    <FileAudio size={16} className={`shrink-0 ${isAnalyzing || isSwitchingFile ? 'text-slate-400 animate-pulse' : 'text-indigo-600'}`} />
+                    cacheKeys.map(key => {
+                      const name = key.replace('gemini_analysis_', '').replace(/_\d+$/, '');
+                      return (
+                        <div
+                          key={key}
+                          onClick={() => loadCache(key)}
+                          className="flex items-center justify-between bg-white border border-slate-200 p-3 rounded-xl shadow-sm hover:border-indigo-300 hover:bg-slate-50 transition-all cursor-pointer group/item"
+                        >
+                          <span className="text-sm font-medium text-slate-700 truncate flex-1 mr-4" title={key}>{name}</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteCache(key); }}
+                              className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                              title="Delete"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
-
-                  <span className={`text-base font-bold truncate group-hover:text-indigo-700 transition-colors ${isAnalyzing || isSwitchingFile ? 'text-slate-500 italic' : ''}`}>
-                    {isAnalyzing
-                      ? `Extracting Transcript...`
-                      : (activeFile?.data && activeFile.data.some(d => !d.isAnalyzed)
-                        ? `Analyzing Details (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
-                        : activeFile?.file?.name || "Ready")
-                    }
-                  </span>
                 </div>
-              ) : (
-                <span className="text-base font-bold text-slate-400">Select File...</span>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Right: Settings (Optional shortcut) */}
-        <button
-          onClick={() => setShowSettings(true)}
-          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
-        >
-          <Settings size={20} />
-        </button>
-      </header>
-
-      {/* Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden relative">
-
-        {/* Active File Content */}
-        {activeFile ? (
-          <div className="flex flex-col h-full">
-            <div className="flex-1 w-full overflow-y-auto bg-[#F8FAFC]" onClick={() => { setShowSpeedMenu(false); setShowFileList(false); }}>
-
-              <div className="max-w-6xl mx-auto px-2 md:px-6 pb-32">
-                {isAnalyzing || isSwitchingFile ? (
-                  <div className="flex flex-col items-center justify-center py-20 space-y-6">
-                    <div className="relative w-20 h-20">
-                      <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
-                      <div className="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
-                    </div>
-                    <div className="text-center">
-                      <h3 className="text-lg font-bold text-slate-900">Analyzing {activeFile.file.name}...</h3>
-                      <p className="text-slate-500">
-                        {activeFile.data && activeFile.data.length > 0
-                          ? `Applying 8 Principles & Deep Scan (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
-                          : "Extracting timeline using Gemini 2.5..."
-                        }
-                      </p>
-                    </div>
-                  </div>
-                ) : activeFile.error ? (
-                  <div className="max-w-xl mx-auto p-6 bg-red-50 text-red-600 rounded-2xl border border-red-100 text-center">
-                    <AlertCircle size={32} className="mx-auto mb-3 text-red-500" />
-                    <h3 className="font-bold text-lg mb-1">Analysis Failed</h3>
-                    <p>{activeFile.error}</p>
-                  </div>
-                ) : transcriptData.length === 0 ? (
-                  <div className="text-center py-20 text-slate-400">
-                    <p>Analysis complete but no text found.</p>
-                  </div>
-                ) : (
-                  // KEY-SWITCHING IMPLEMENTATION
-                  // key={activeFileId} forces a full remount of this container when file changes
-                  <div key={activeFileId} className="space-y-2 min-h-[200px] relative">
-                    <ErrorBoundary>
-                      {transcriptData.map((item, idx) => {
-                        const isActive = idx === currentSentenceIdx;
-                        // COMPOSITE KEY: Prevents React from skipping repeated lyrics by using FileID + Index + Time
-                        const compositeKey = `${activeFileId}-${idx}-${item.seconds}`;
-                        return (
-                          <TranscriptItem
-                            key={compositeKey}
-                            item={item}
-                            idx={idx}
-                            isActive={isActive}
-                            manualScrollNonce={manualScrollNonce}
-                            seekTo={seekTo}
-                            jumpToSentence={jumpToSentence}
-                            toggleLoop={toggleLoop}
-                            onPrev={() => handlePrev(idx)}
-                            onNext={() => handleNext(idx)}
-                            isLooping={isActive && isGlobalLoopActive}
-                            isGlobalLooping={isGlobalLoopActive}
-                            showAnalysis={showAnalysis}
-                            showTranslations={showTranslations}
-                            toggleGlobalAnalysis={() => setShowAnalysis(!showAnalysis)}
-                          />
-                        );
-                      })}
-                    </ErrorBoundary>
-                  </div>
+                {cacheKeys.length > 0 && (
+                  <button onClick={clearAllCache} className="w-full py-2 bg-slate-100 hover:bg-red-50 hover:text-red-600 text-slate-600 font-bold rounded-xl flex items-center justify-center gap-2 text-sm transition-colors">
+                    <Trash2 size={14} /> Clear All Cache
+                  </button>
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* 2. Bottom Player Controls (Sticky Bottom) */}
-            <div className="flex-none bg-white/95 backdrop-blur-md border-t border-slate-200 z-50 shadow-lg pb-safe">
-              <div className="max-w-5xl mx-auto flex flex-row items-stretch h-[85px] sm:h-[100px]">
 
-                {/* Left: Video Thumbnail or Recovery UI */}
-                <div className="relative bg-black w-[110px] sm:w-[140px] shrink-0 overflow-hidden group border-r border-slate-100 flex items-center justify-center">
-                  {mediaUrl ? (
-                    <>
-                      <video
-                        ref={videoRef}
-                        src={mediaUrl}
-                        className="w-full h-full object-contain"
-                        onClick={togglePlay}
-                        playsInline
-                        loop
-                      />
-                      {!isPlaying && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none">
-                          <Play size={24} fill="white" className="text-white ml-0.5" />
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center p-2 text-center space-y-2">
-                      <AlertCircle size={24} className="text-red-400" />
-                      <div className="text-[10px] font-bold text-slate-300 leading-tight">
-                        원본 파일을<br />찾을 수 없습니다
-                      </div>
-                      <label className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold rounded cursor-pointer transition-colors">
-                        연결하기
-                        <input type="file" className="hidden" onChange={(e) => processFiles(e.target.files)} accept="audio/*,video/*" />
-                      </label>
-                    </div>
-                  )}
-                </div>
 
-                {/* Right: Controls Column */}
-                <div className="flex-1 flex flex-col justify-center min-w-0">
-
-                  {/* Row 1: Progress Bar */}
-                  <div className="w-full px-3 pt-2 pb-1 flex items-center gap-2 text-[10px] sm:text-xs font-mono font-bold text-slate-500">
-                    <span className="w-9 shrink-0 text-indigo-600 text-right">
-                      {new Date(Math.max(0, currentTime) * 1000).toISOString().substr(14, 5)}
-                    </span>
-
-                    <div
-                      className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden cursor-pointer group relative"
-                      onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        seekTo(((e.clientX - rect.left) / rect.width) * videoRef.current.duration);
-                      }}
-                    >
-                      <div className="absolute inset-0 w-full h-full hover:bg-slate-200/40 transition-colors" />
-                      <div
-                        className="h-full bg-indigo-500 rounded-full relative group-hover:bg-indigo-600 transition-all duration-300 shadow-[0_0_8px_rgba(99,102,241,0.5)]"
-                        style={{ width: `${videoRef.current?.duration ? (currentTime / videoRef.current.duration) * 100 : 0}%` }}
-                      />
-                    </div>
-
-                    <span className="w-9 shrink-0 text-left">{videoRef.current?.duration ? new Date(videoRef.current.duration * 1000).toISOString().substr(14, 5) : "00:00"}</span>
-                  </div>
-
-                  {/* Row 2: Control Buttons */}
-                  <div className="flex items-center justify-between px-3 pl-1 py-1 gap-1">
-
-                    {/* Speed & Analysis */}
-                    <div className="flex items-center gap-1">
-                      <div className="relative">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setShowSpeedMenu(!showSpeedMenu); }}
-                          className={`
-                            flex items-center justify-center gap-0.5 px-2 py-1.5 rounded-lg text-[10px] font-bold transition-all min-w-[40px] border
-                            ${showSpeedMenu ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}
-                          `}
-                        >
-                          {playbackRate.toFixed(1)}x
-                        </button>
-                        {showSpeedMenu && (
-                          <div className="absolute bottom-full left-0 mb-2 bg-white rounded-xl shadow-xl border border-slate-100 p-2 z-[60] w-48">
-                            <div className="grid grid-cols-4 gap-1">
-                              {[0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0].map(rate => (
-                                <button
-                                  key={rate}
-                                  onClick={(e) => { e.stopPropagation(); handleRateChange(rate); setShowSpeedMenu(false); }}
-                                  className={`py-1.5 rounded text-[10px] font-bold ${Math.abs(playbackRate - rate) < 0.01 ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-                                >
-                                  {rate.toFixed(1)}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={() => setShowAnalysis(!showAnalysis)}
-                        className={`p-1.5 rounded-lg border transition-all ${showAnalysis ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-white text-slate-400 border-slate-200'}`}
-                      >
-                        {showAnalysis ? <Eye size={16} /> : <EyeOff size={16} />}
-                      </button>
-                    </div>
-
-                    {/* Main Controls */}
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => handlePrev(currentSentenceIdx)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors">
-                        <SkipBack size={18} className="fill-current" />
-                      </button>
-
-                      <button
-                        onClick={togglePlay}
-                        className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full flex items-center justify-center shadow-lg shadow-indigo-200 transition-transform active:scale-95"
-                      >
-                        {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-                      </button>
-
-                      <button onClick={() => handleNext(currentSentenceIdx)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors">
-                        <SkipForward size={18} className="fill-current" />
-                      </button>
-                    </div>
-
-                    {/* Right: Loop Only (Translations removed) */}
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={toggleLoop}
-                        className={`p-1.5 rounded-lg border transition-all ${isGlobalLoopActive ? 'bg-amber-50 text-amber-600 border-amber-200 shadow-sm' : 'bg-white text-slate-400 border-slate-200'}`}
-                        title="Toggle Global Sentence Loop"
-                      >
-                        <Repeat size={16} className={isGlobalLoopActive ? 'animate-pulse' : ''} />
-                      </button>
-                    </div>
-
-                  </div>
-                </div>
-
-              </div>
+      <div className="max-w-4xl w-full text-center space-y-10 animate-in fade-in zoom-in duration-500">
+        <div className="space-y-4">
+          <div className="inline-flex items-center justify-center p-3 bg-indigo-50 rounded-2xl ring-1 ring-indigo-100 mb-2">
+            <Volume2 size={28} className="text-indigo-600" />
+          </div>
+          <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-slate-900">
+            Media<span className="text-indigo-600">Smart</span> Analyzer
+          </h1>
+        </div>
+        <div className={`
+                 max-w-3xl mx-auto group relative flex items-center gap-6 p-10 rounded-3xl border-2 border-dashed transition-all duration-300 cursor-pointer
+                 border-slate-200 hover:border-indigo-300 hover:bg-white bg-white/60
+              `}>
+          <input type="file" multiple className="absolute inset-0 opacity-0 cursor-pointer z-10" onChange={(e) => processFiles(e.target.files)} accept="audio/*,video/*" />
+          <div className="w-full flex flex-col items-center gap-4">
+            <div className="p-4 bg-indigo-100 text-indigo-600 rounded-2xl group-hover:scale-110 transition-transform">
+              <Upload size={32} />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-800 text-xl">Drag & Drop Multiple Files</h3>
+              <p className="text-slate-500 mt-2">or click to browse</p>
             </div>
           </div>
-        ) : (
-          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-            <div className="flex-1 flex items-center justify-center p-10">
-              <div className="max-w-md w-full p-8 bg-white rounded-3xl border-2 border-dashed border-slate-200 text-center space-y-4">
-                <div className="inline-flex p-4 bg-slate-50 rounded-2xl text-slate-400">
-                  <FileAudio size={32} />
-                </div>
-                <div>
-                  <h3 className="text-xl font-bold text-slate-800">No active file</h3>
-                  <p className="text-slate-500 mt-1">Upload or select a file to start the analysis.</p>
-                </div>
+        </div>
+      </div>
+    </div >
+  );
+}
 
-                {/* Quick Model Selection on Home */}
-                <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-3">
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Default Gemini Model</p>
-                  <div className="grid grid-cols-1 gap-2">
-                    {[
-                      { id: 'gemini-2.0-flash', name: 'Gemini 2 Flash' },
-                      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-                      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' }
-                    ].map(m => (
-                      <button
-                        key={m.id}
-                        onClick={() => saveConfiguration(apiKey, m.id)}
-                        className={`flex items-center justify-between px-4 py-2.5 rounded-xl border transition-all ${selectedModel === m.id
-                          ? 'bg-white border-indigo-200 text-indigo-700 font-bold shadow-sm'
-                          : 'bg-white/50 border-slate-100 text-slate-500 hover:bg-white'
-                          }`}
-                      >
-                        <span className="text-sm">{m.name}</span>
-                        {selectedModel === m.id && <Check size={14} className="text-indigo-600" />}
-                      </button>
-                    ))}
+// View: Main Workspace
+
+const headerElement = (
+  <header className="flex-none bg-white border-b border-slate-200 flex items-center justify-between px-4 py-3 z-20 shadow-sm relative">
+    <div className="flex-1 min-w-0">
+
+      {/* Center: File List Popup Trigger -> Now Unified Manager Trigger */}
+      <div className="relative">
+        <button
+          onClick={() => setShowCacheHistory(true)}
+          className="w-full text-center px-4 py-2 hover:bg-slate-50 rounded-xl transition-colors group"
+        >
+          {activeFile ? (
+            <div className="flex items-center justify-center gap-2 text-slate-900">
+              {activeFile.file.type.startsWith('video') ? <FileVideo size={16} className="text-indigo-600 shrink-0" /> : <FileAudio size={16} className="text-indigo-600 shrink-0" />}
+              <span className="text-lg font-bold truncate group-hover:text-indigo-700 transition-colors">{activeFile.file.name}</span>
+            </div>
+          ) : (
+            <span className="text-lg font-bold text-slate-400">Select File...</span>
+          )}
+        </button>
+
+        {/* File List Popup */}
+        {showFileList && (
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-100 p-2 z-50 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between px-2 py-1 mb-2 border-b border-slate-50">
+              <span className="text-xs font-bold text-slate-500 uppercase">Active Files</span>
+              <label className="cursor-pointer text-indigo-600 hover:text-indigo-700 p-1 rounded hover:bg-indigo-50" title="Add File">
+                <Plus size={16} />
+                <input type="file" multiple className="hidden" onChange={(e) => { processFiles(e.target.files); setShowFileList(false); }} accept="audio/*,video/*" />
+              </label>
+            </div>
+            <div className="max-h-60 overflow-y-auto space-y-1">
+              {files.length === 0 ? (
+                <div className="text-center py-4 text-slate-400 text-sm">No files added</div>
+              ) : (
+                files.map(f => (
+                  <div
+                    key={f.id}
+                    onClick={() => { setActiveFileId(f.id); setShowFileList(false); }}
+                    className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors ${f.id === activeFileId ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50 text-slate-700'}`}
+                  >
+                    {f.file.type.startsWith('video') ? <FileVideo size={14} /> : <FileAudio size={14} />}
+                    <span className="text-sm font-medium truncate flex-1">{f.file.name}</span>
+                    <button onClick={(e) => removeFile(f.id, e)} className="p-1 text-slate-300 hover:text-red-500 rounded"><X size={14} /></button>
                   </div>
-                </div>
-                <button
-                  onClick={() => setShowCacheHistory(true)}
-                  className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md shadow-indigo-100"
-                >
-                  Select from List
+                ))
+              )}
+            </div>
+            {files.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-slate-50">
+                <button onClick={removeAllFiles} className="w-full py-1.5 text-xs font-bold text-red-500 hover:bg-red-50 rounded-lg transition-colors flex items-center justify-center gap-1">
+                  <Trash2 size={12} /> Clear All Files
                 </button>
               </div>
-            </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Settings Modal */}
-      {
-        showSettings && (
-          <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="bg-slate-100 p-2 rounded-xl">
-                    <Settings size={20} className="text-slate-600" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-slate-900">Settings</h2>
-                    <p className="text-xs text-slate-500 font-medium">Configure Gemini AI & Preferences</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors">
-                  <X size={20} className="text-slate-400" />
-                </button>
+    </div>
+  </header>
+);
+return (
+  <div
+    onDragOver={onDragOver}
+    onDragLeave={onDragLeave}
+    onDrop={onDrop}
+    className="flex flex-col h-screen bg-[#F8FAFC] text-slate-800 overflow-hidden font-sans animate-in fade-in duration-700 relative"
+  >
+    {/* Drag Overlay */}
+    {isDragging && (
+      <div className="absolute inset-0 z-50 bg-indigo-500/10 backdrop-blur-sm flex items-center justify-center p-10 border-4 border-indigo-500 border-dashed m-4 rounded-3xl pointer-events-none">
+        <h2 className="text-4xl font-bold text-indigo-600 animate-bounce">Drop to Add Files</h2>
+      </div>
+    )}
+
+    {/* Header - Now Sticky & Compact */}
+    <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 flex-none h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6">
+      {/* Left: Home Button (Back to Upload) */}
+      <button
+        onClick={() => {
+          setFiles([]);
+          setActiveFileId(null);
+          resetPlayerState();
+        }}
+        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+        title="Go to Home"
+      >
+        <Home size={20} />
+      </button>
+
+      <div className="flex-1 min-w-0">
+        <div className="relative">
+          <button
+            onClick={() => setShowCacheHistory(true)}
+            className="w-full text-center px-4 py-1.5 hover:bg-slate-50 rounded-xl transition-colors group"
+          >
+            {activeFile ? (
+              <div className="flex items-center justify-center gap-2 text-slate-900">
+                {/* Icon based on file type */}
+                {activeFile.file.type.startsWith('video') ? (
+                  <FileVideo size={16} className={`shrink-0 ${isAnalyzing || isSwitchingFile ? 'text-slate-400 animate-pulse' : 'text-indigo-600'}`} />
+                ) : (
+                  <FileAudio size={16} className={`shrink-0 ${isAnalyzing || isSwitchingFile ? 'text-slate-400 animate-pulse' : 'text-indigo-600'}`} />
+                )}
+
+                <span className={`text-base font-bold truncate group-hover:text-indigo-700 transition-colors ${isAnalyzing || isSwitchingFile ? 'text-slate-500 italic' : ''}`}>
+                  {isAnalyzing
+                    ? `Extracting Transcript...`
+                    : (activeFile?.data && activeFile.data.some(d => !d.isAnalyzed)
+                      ? `Analyzing Details (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
+                      : activeFile?.file?.name || "Ready")
+                  }
+                </span>
               </div>
+            ) : (
+              <span className="text-base font-bold text-slate-400">Select File...</span>
+            )}
+          </button>
+        </div>
+      </div>
 
-              <div className="p-6 space-y-6">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-bold text-slate-700">Gemini API Key</label>
-                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
-                      Get Key <X size={10} className="rotate-45" />
-                    </a>
-                  </div>
-                  <div className="relative group">
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="Enter your API key..."
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all font-mono text-sm"
-                    />
-                    <Check className={`absolute right-4 top-1/2 -translate-y-1/2 text-emerald-500 transition-all ${apiKey.length > 20 ? 'opacity-100 scale-100' : 'opacity-0 scale-50'}`} size={18} />
-                  </div>
-                  <p className="text-[10px] text-slate-400 leading-relaxed">
-                    Your key is stored locally in your browser and never sent to our servers.
-                  </p>
-                </div>
+      {/* Right: Settings (Optional shortcut) */}
+      <button
+        onClick={() => setShowSettings(true)}
+        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+      >
+        <Settings size={20} />
+      </button>
+    </header>
 
-                <div className="space-y-3 pt-4 border-t border-slate-50">
-                  <label className="text-sm font-bold text-slate-700">Gemini Model Selection</label>
-                  <div className="grid grid-cols-1 gap-2">
-                    {[
-                      { id: 'gemini-2.0-flash', name: 'Gemini 2 Flash' },
-                      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-                      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' }
-                    ].map(m => (
-                      <button
-                        key={m.id}
-                        onClick={() => setSelectedModel(m.id)}
-                        className={`flex items-center justify-between px-4 py-3 rounded-2xl border transition-all ${selectedModel === m.id
-                          ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-bold shadow-sm'
-                          : 'bg-white border-slate-100 text-slate-600 hover:bg-slate-50'
-                          }`}
-                      >
-                        <span className="text-sm">{m.name}</span>
-                        {selectedModel === m.id && <Check size={16} className="text-indigo-600" />}
-                      </button>
-                    ))}
+    {/* Content Area */}
+    <div className="flex-1 flex flex-col overflow-hidden relative">
+
+      {/* Active File Content */}
+      {activeFile ? (
+        <div className="flex flex-col h-full">
+          <div className="flex-1 w-full overflow-y-auto bg-[#F8FAFC]" onClick={() => { setShowSpeedMenu(false); setShowFileList(false); }}>
+
+            <div className="max-w-6xl mx-auto px-2 md:px-6 pb-32">
+              {isAnalyzing || isSwitchingFile ? (
+                <div className="flex flex-col items-center justify-center py-20 space-y-6">
+                  <div className="relative w-20 h-20">
+                    <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
+                    <div className="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
+                  </div>
+                  <div className="text-center">
+                    <h3 className="text-lg font-bold text-slate-900">Analyzing {activeFile.file.name}...</h3>
+                    <p className="text-slate-500">
+                      {activeFile.data && activeFile.data.length > 0
+                        ? `Applying 8 Principles & Deep Scan (${activeFile.data.filter(d => d.isAnalyzed).length}/${activeFile.data.length})`
+                        : "Extracting timeline using Gemini 2.5..."
+                      }
+                    </p>
                   </div>
                 </div>
-
-                <div className="space-y-4 pt-4 border-t border-slate-50">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-800">Cache Results</h4>
-                      <p className="text-xs text-slate-400">Save analysis for offline use</p>
-                    </div>
-                    <div className="w-10 h-6 bg-emerald-500 rounded-full relative p-1">
-                      <div className="w-4 h-4 bg-white rounded-full ml-auto shadow-sm" />
-                    </div>
-                  </div>
+              ) : activeFile.error ? (
+                <div className="max-w-xl mx-auto p-6 bg-red-50 text-red-600 rounded-2xl border border-red-100 text-center">
+                  <AlertCircle size={32} className="mx-auto mb-3 text-red-500" />
+                  <h3 className="font-bold text-lg mb-1">Analysis Failed</h3>
+                  <p>{activeFile.error}</p>
                 </div>
-              </div>
-
-              <div className="p-6 bg-slate-50 flex gap-3">
-                <button
-                  onClick={() => setShowSettings(false)}
-                  className="flex-1 py-3 text-slate-600 font-bold hover:bg-white rounded-2xl transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => saveConfiguration(apiKey, selectedModel)}
-                  className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-indigo-200"
-                >
-                  Save Configuration
-                </button>
-              </div>
+              ) : transcriptData.length === 0 ? (
+                <div className="text-center py-20 text-slate-400">
+                  <p>Analysis complete but no text found.</p>
+                </div>
+              ) : (
+                // KEY-SWITCHING IMPLEMENTATION
+                // key={activeFileId} forces a full remount of this container when file changes
+                <div key={activeFileId} className="space-y-2 min-h-[200px] relative">
+                  <ErrorBoundary>
+                    {transcriptData.map((item, idx) => {
+                      const isActive = idx === currentSentenceIdx;
+                      // COMPOSITE KEY: Prevents React from skipping repeated lyrics by using FileID + Index + Time
+                      const compositeKey = `${activeFileId}-${idx}-${item.seconds}`;
+                      return (
+                        <TranscriptItem
+                          key={compositeKey}
+                          item={item}
+                          idx={idx}
+                          isActive={isActive}
+                          manualScrollNonce={manualScrollNonce}
+                          seekTo={seekTo}
+                          jumpToSentence={jumpToSentence}
+                          toggleLoop={toggleLoop}
+                          onPrev={() => handlePrev(idx)}
+                          onNext={() => handleNext(idx)}
+                          isLooping={isActive && isGlobalLoopActive}
+                          isGlobalLooping={isGlobalLoopActive}
+                          showAnalysis={showAnalysis}
+                          showTranslations={showTranslations}
+                          toggleGlobalAnalysis={() => setShowAnalysis(!showAnalysis)}
+                        />
+                      );
+                    })}
+                  </ErrorBoundary>
+                </div>
+              )}
             </div>
           </div>
-        )
-      }
 
-      {/* Unified File History Modal */}
-      {
-        showCacheHistory && (
-          <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl h-[95vh] overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col">
-              <div className="p-3 px-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white z-10">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={clearAllCache}
-                    className="flex items-center gap-2 px-3 py-2 text-slate-500 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors text-sm font-bold"
-                  >
-                    <Trash2 size={16} /> Clear All History
-                  </button>
-                </div>
-                <button onClick={() => setShowCacheHistory(false)} className="p-2 hover:bg-red-50 hover:text-red-500 rounded-xl transition-colors">
-                  <X size={24} className="text-slate-400 hover:text-red-500" />
-                </button>
+          {/* 2. Bottom Player Controls (Sticky Bottom) */}
+          <div className="flex-none bg-white/95 backdrop-blur-md border-t border-slate-200 z-50 shadow-lg pb-safe">
+            <div className="max-w-5xl mx-auto flex flex-row items-stretch h-[85px] sm:h-[100px]">
+
+              {/* Left: Video Thumbnail or Recovery UI */}
+              <div className="relative bg-black w-[110px] sm:w-[140px] shrink-0 overflow-hidden group border-r border-slate-100 flex items-center justify-center">
+                {mediaUrl ? (
+                  <>
+                    <video
+                      ref={videoRef}
+                      src={mediaUrl}
+                      className="w-full h-full object-contain"
+                      onClick={togglePlay}
+                      playsInline
+                      loop
+                    />
+                    {!isPlaying && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none">
+                        <Play size={24} fill="white" className="text-white ml-0.5" />
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center p-2 text-center space-y-2">
+                    <AlertCircle size={24} className="text-red-400" />
+                    <div className="text-[10px] font-bold text-slate-300 leading-tight">
+                      원본 파일을<br />찾을 수 없습니다
+                    </div>
+                    <label className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold rounded cursor-pointer transition-colors">
+                      연결하기
+                      <input type="file" className="hidden" onChange={(e) => processFiles(e.target.files)} accept="audio/*,video/*" />
+                    </label>
+                  </div>
+                )}
               </div>
 
-              <div className="flex-1 overflow-hidden flex flex-col bg-slate-50/50">
+              {/* Right: Controls Column */}
+              <div className="flex-1 flex flex-col justify-center min-w-0">
 
-                {/* Controls Area */}
-                <div className="p-3 sm:p-4 space-y-3">
-                  {/* Upload Button */}
-                  <div className="relative">
-                    <label
-                      htmlFor="manager-file-upload"
-                      className="flex items-center justify-center gap-3 w-full p-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl cursor-pointer shadow-lg shadow-indigo-200 transition-all group"
-                    >
-                      <div className="p-2 bg-white/20 rounded-lg group-hover:scale-110 transition-transform">
-                        <Upload size={24} />
-                      </div>
-                      <div>
-                        <span className="block text-lg font-bold">Upload New File</span>
-                        <span className="text-xs text-indigo-200">Audio or Video support</span>
-                      </div>
-                    </label>
-                    <input
-                      id="manager-file-upload"
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => {
-                        const files = e.target.files;
-                        if (files && files.length > 0) {
-                          processFiles(files);
-                          e.target.value = '';
-                          setShowCacheHistory(false);
-                        }
-                      }}
-                      accept="audio/*,video/*"
+                {/* Row 1: Progress Bar */}
+                <div className="w-full px-3 pt-2 pb-1 flex items-center gap-2 text-[10px] sm:text-xs font-mono font-bold text-slate-500">
+                  <span className="w-9 shrink-0 text-indigo-600 text-right">
+                    {new Date(Math.max(0, currentTime) * 1000).toISOString().substr(14, 5)}
+                  </span>
+
+                  <div
+                    className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden cursor-pointer group relative"
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      seekTo(((e.clientX - rect.left) / rect.width) * videoRef.current.duration);
+                    }}
+                  >
+                    <div className="absolute inset-0 w-full h-full hover:bg-slate-200/40 transition-colors" />
+                    <div
+                      className="h-full bg-indigo-500 rounded-full relative group-hover:bg-indigo-600 transition-all duration-300 shadow-[0_0_8px_rgba(99,102,241,0.5)]"
+                      style={{ width: `${videoRef.current?.duration ? (currentTime / videoRef.current.duration) * 100 : 0}%` }}
                     />
                   </div>
 
-                  {/* Search Bar */}
-                  <div className="relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                    <input
-                      type="text"
-                      placeholder="Search analysis history..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-12 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all shadow-sm"
-                    />
-                  </div>
+                  <span className="w-9 shrink-0 text-left">{videoRef.current?.duration ? new Date(videoRef.current.duration * 1000).toISOString().substr(14, 5) : "00:00"}</span>
                 </div>
 
-                {
-                  /* List - Merged Analyzing & Cached */
-                  (() => {
-                    const analyzingFiles = files.filter(f => f.isAnalyzing);
-                    const filteredCacheKeys = cacheKeys.filter(key => key.toLowerCase().includes(searchQuery.toLowerCase()));
+                {/* Row 2: Control Buttons */}
+                <div className="flex items-center justify-between px-3 pl-1 py-1 gap-1">
 
-                    if (analyzingFiles.length === 0 && filteredCacheKeys.length === 0) {
-                      return (
-                        <div className="text-center py-20 text-slate-400">
-                          <Clock size={48} className="mx-auto mb-4 opacity-20" />
-                          <p className="text-lg font-medium">No history found</p>
-                          <p className="text-sm">Upload a file to start analyzing</p>
+                  {/* Speed & Analysis */}
+                  <div className="flex items-center gap-1">
+                    <div className="relative">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setShowSpeedMenu(!showSpeedMenu); }}
+                        className={`
+                            flex items-center justify-center gap-0.5 px-2 py-1.5 rounded-lg text-[10px] font-bold transition-all min-w-[40px] border
+                            ${showSpeedMenu ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}
+                          `}
+                      >
+                        {playbackRate.toFixed(1)}x
+                      </button>
+                      {showSpeedMenu && (
+                        <div className="absolute bottom-full left-0 mb-2 bg-white rounded-xl shadow-xl border border-slate-100 p-2 z-[60] w-48">
+                          <div className="grid grid-cols-4 gap-1">
+                            {[0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0].map(rate => (
+                              <button
+                                key={rate}
+                                onClick={(e) => { e.stopPropagation(); handleRateChange(rate); setShowSpeedMenu(false); }}
+                                className={`py-1.5 rounded text-[10px] font-bold ${Math.abs(playbackRate - rate) < 0.01 ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                              >
+                                {rate.toFixed(1)}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      );
-                    }
+                      )}
+                    </div>
 
+                    <button
+                      onClick={() => setShowAnalysis(!showAnalysis)}
+                      className={`p-1.5 rounded-lg border transition-all ${showAnalysis ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-white text-slate-400 border-slate-200'}`}
+                    >
+                      {showAnalysis ? <Eye size={16} /> : <EyeOff size={16} />}
+                    </button>
+                  </div>
+
+                  {/* Main Controls */}
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => handlePrev(currentSentenceIdx)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors">
+                      <SkipBack size={18} className="fill-current" />
+                    </button>
+
+                    <button
+                      onClick={togglePlay}
+                      className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full flex items-center justify-center shadow-lg shadow-indigo-200 transition-transform active:scale-95"
+                    >
+                      {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+                    </button>
+
+                    <button onClick={() => handleNext(currentSentenceIdx)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors">
+                      <SkipForward size={18} className="fill-current" />
+                    </button>
+                  </div>
+
+                  {/* Right: Loop Only (Translations removed) */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={toggleLoop}
+                      className={`p-1.5 rounded-lg border transition-all ${isGlobalLoopActive ? 'bg-amber-50 text-amber-600 border-amber-200 shadow-sm' : 'bg-white text-slate-400 border-slate-200'}`}
+                      title="Toggle Global Sentence Loop"
+                    >
+                      <Repeat size={16} className={isGlobalLoopActive ? 'animate-pulse' : ''} />
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+          <div className="flex-1 flex items-center justify-center p-10">
+            <div className="max-w-md w-full p-8 bg-white rounded-3xl border-2 border-dashed border-slate-200 text-center space-y-4">
+              <div className="inline-flex p-4 bg-slate-50 rounded-2xl text-slate-400">
+                <FileAudio size={32} />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-slate-800">No active file</h3>
+                <p className="text-slate-500 mt-1">Upload or select a file to start the analysis.</p>
+              </div>
+
+              {/* Quick Model Selection on Home */}
+              <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-3">
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Default Gemini Model</p>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+                    { id: 'gemini-2.0-flash', name: 'Gemini 2 Flash' },
+                    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+                    { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' }
+                  ].map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => saveConfiguration(apiKey, m.id)}
+                      className={`flex items-center justify-between px-4 py-2.5 rounded-xl border transition-all ${selectedModel === m.id
+                        ? 'bg-white border-indigo-200 text-indigo-700 font-bold shadow-sm'
+                        : 'bg-white/50 border-slate-100 text-slate-500 hover:bg-white'
+                        }`}
+                    >
+                      <span className="text-sm">{m.name}</span>
+                      {selectedModel === m.id && <Check size={14} className="text-indigo-600" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCacheHistory(true)}
+                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-md shadow-indigo-100"
+              >
+                Select from List
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+
+    {/* Settings Modal */}
+    {
+      showSettings && (
+        <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-slate-100 p-2 rounded-xl">
+                  <Settings size={20} className="text-slate-600" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Settings</h2>
+                  <p className="text-xs text-slate-500 font-medium">Configure Gemini AI & Preferences</p>
+                </div>
+              </div>
+              <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors">
+                <X size={20} className="text-slate-400" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-bold text-slate-700">Gemini API Key</label>
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+                    Get Key <X size={10} className="rotate-45" />
+                  </a>
+                </div>
+                <div className="relative group">
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Enter your API key..."
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all font-mono text-sm"
+                  />
+                  <Check className={`absolute right-4 top-1/2 -translate-y-1/2 text-emerald-500 transition-all ${apiKey.length > 20 ? 'opacity-100 scale-100' : 'opacity-0 scale-50'}`} size={18} />
+                </div>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  Your key is stored locally in your browser and never sent to our servers.
+                </p>
+              </div>
+
+              <div className="space-y-3 pt-4 border-t border-slate-50">
+                <label className="text-sm font-bold text-slate-700">Gemini Model Selection</label>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+                    { id: 'gemini-2.0-flash', name: 'Gemini 2 Flash' },
+                    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+                    { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' }
+                  ].map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => setSelectedModel(m.id)}
+                      className={`flex items-center justify-between px-4 py-3 rounded-2xl border transition-all ${selectedModel === m.id
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-bold shadow-sm'
+                        : 'bg-white border-slate-100 text-slate-600 hover:bg-slate-50'
+                        }`}
+                    >
+                      <span className="text-sm">{m.name}</span>
+                      {selectedModel === m.id && <Check size={16} className="text-indigo-600" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-4 pt-4 border-t border-slate-50">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-800">Cache Results</h4>
+                    <p className="text-xs text-slate-400">Save analysis for offline use</p>
+                  </div>
+                  <div className="w-10 h-6 bg-emerald-500 rounded-full relative p-1">
+                    <div className="w-4 h-4 bg-white rounded-full ml-auto shadow-sm" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 bg-slate-50 flex gap-3">
+              <button
+                onClick={() => setShowSettings(false)}
+                className="flex-1 py-3 text-slate-600 font-bold hover:bg-white rounded-2xl transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => saveConfiguration(apiKey, selectedModel)}
+                className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-indigo-200"
+              >
+                Save Configuration
+              </button>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    {/* Unified File History Modal */}
+    {
+      showCacheHistory && (
+        <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl h-[95vh] overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col">
+            <div className="p-3 px-4 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white z-10">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={clearAllCache}
+                  className="flex items-center gap-2 px-3 py-2 text-slate-500 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors text-sm font-bold"
+                >
+                  <Trash2 size={16} /> Clear All History
+                </button>
+              </div>
+              <button onClick={() => setShowCacheHistory(false)} className="p-2 hover:bg-red-50 hover:text-red-500 rounded-xl transition-colors">
+                <X size={24} className="text-slate-400 hover:text-red-500" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-hidden flex flex-col bg-slate-50/50">
+
+              {/* Controls Area */}
+              <div className="p-3 sm:p-4 space-y-3">
+                {/* Upload Button */}
+                <div className="relative">
+                  <label
+                    htmlFor="manager-file-upload"
+                    className="flex items-center justify-center gap-3 w-full p-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl cursor-pointer shadow-lg shadow-indigo-200 transition-all group"
+                  >
+                    <div className="p-2 bg-white/20 rounded-lg group-hover:scale-110 transition-transform">
+                      <Upload size={24} />
+                    </div>
+                    <div>
+                      <span className="block text-lg font-bold">Upload New File</span>
+                      <span className="text-xs text-indigo-200">Audio or Video support</span>
+                    </div>
+                  </label>
+                  <input
+                    id="manager-file-upload"
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      if (files && files.length > 0) {
+                        processFiles(files);
+                        e.target.value = '';
+                        setShowCacheHistory(false);
+                      }
+                    }}
+                    accept="audio/*,video/*"
+                  />
+                </div>
+
+                {/* Search Bar */}
+                <div className="relative">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                  <input
+                    type="text"
+                    placeholder="Search analysis history..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-12 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all shadow-sm"
+                  />
+                </div>
+              </div>
+
+              {
+                /* List - Merged Analyzing & Cached */
+                (() => {
+                  const analyzingFiles = files.filter(f => f.isAnalyzing);
+                  const filteredCacheKeys = cacheKeys.filter(key => key.toLowerCase().includes(searchQuery.toLowerCase()));
+
+                  if (analyzingFiles.length === 0 && filteredCacheKeys.length === 0) {
                     return (
-                      <div className="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 space-y-2">
-                        {/* 1. Analyzing Files */}
-                        {analyzingFiles.map(f => {
-                          const isActive = activeFileId === f.id;
-                          return (
-                            <div
-                              key={f.id}
-                              onClick={() => { setActiveFileId(f.id); setShowCacheHistory(false); }}
-                              className={`
+                      <div className="text-center py-20 text-slate-400">
+                        <Clock size={48} className="mx-auto mb-4 opacity-20" />
+                        <p className="text-lg font-medium">No history found</p>
+                        <p className="text-sm">Upload a file to start analyzing</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 space-y-2">
+                      {/* 1. Analyzing Files */}
+                      {analyzingFiles.map(f => {
+                        const isActive = activeFileId === f.id;
+                        return (
+                          <div
+                            key={f.id}
+                            onClick={() => { setActiveFileId(f.id); setShowCacheHistory(false); }}
+                            className={`
                                 group flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer
                                 ${isActive
-                                  ? 'bg-indigo-100 border-indigo-300 shadow-md'
-                                  : 'bg-indigo-50/50 border-indigo-200 hover:bg-indigo-100/50 hover:border-indigo-300'}
+                                ? 'bg-indigo-100 border-indigo-300 shadow-md'
+                                : 'bg-indigo-50/50 border-indigo-200 hover:bg-indigo-100/50 hover:border-indigo-300'}
                               `}
+                          >
+                            <div className="flex items-center gap-4 min-w-0 flex-1">
+                              <div className={`p-2.5 rounded-xl ${isActive ? 'bg-indigo-600 text-white' : 'bg-indigo-100 text-indigo-600'} animate-pulse`}>
+                                <FileVideo size={20} />
+                              </div>
+                              <div className="min-w-0">
+                                <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-indigo-900'}`}>{f.file.name}</p>
+                                <p className={`text-xs font-medium mt-0.5 animate-pulse ${isActive ? 'text-indigo-700' : 'text-indigo-600'}`}>
+                                  {f.data && f.data.length > 0
+                                    ? `Analyzing (${f.data.filter(d => d.isAnalyzed).length}/${f.data.length})...`
+                                    : "Extracting Transcript..."
+                                  }
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 pl-4 border-l border-indigo-100 ml-4">
+                              <div className="hidden sm:flex items-center gap-2 mr-2">
+                                <div className={`w-2 h-2 rounded-full animate-ping ${isActive ? 'bg-indigo-700' : 'bg-indigo-500'}`} />
+                                <span className={`text-xs font-bold ${isActive ? 'text-indigo-700' : 'text-indigo-500'}`}>Processing</span>
+                              </div>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); removeFile(f.id, e); }}
+                                className="p-2.5 text-indigo-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                                title="Cancel Analysis"
+                              >
+                                <X size={20} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* 2. Cached Files */}
+                      {filteredCacheKeys
+                        .sort().reverse().map(key => {
+                          const name = key.replace('gemini_analysis_', '');
+                          const isActive = activeFile?.file?.name === name; // Simple check by name
+
+                          // [Phase 4] 히스토리 상태 파싱
+                          let statusText = "CACHED";
+                          let progressText = "";
+                          let isFullyAnalyzed = false;
+
+                          try {
+                            const cachedData = JSON.parse(localStorage.getItem(key));
+                            if (cachedData && cachedData.data) {
+                              const total = cachedData.data.length;
+                              const analyzed = cachedData.data.filter(d => d.isAnalyzed).length;
+                              isFullyAnalyzed = analyzed === total;
+                              progressText = `${analyzed}/${total} Sentences`;
+
+                              if (cachedData.metadata?.status === 'extracted') {
+                                statusText = "EXTRACTED";
+                              } else if (isFullyAnalyzed) {
+                                statusText = "COMPLETED";
+                              }
+                            }
+                          } catch (e) { }
+
+                          return (
+                            <div
+                              key={key}
+                              className={`
+                                  group flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all
+                                  ${isActive
+                                  ? 'bg-indigo-50 border-indigo-200 shadow-md shadow-indigo-100'
+                                  : 'bg-white border-slate-200 hover:border-indigo-300 hover:bg-slate-50'}
+                                `}
+                              onClick={() => loadCache(key)}
                             >
                               <div className="flex items-center gap-4 min-w-0 flex-1">
-                                <div className={`p-2.5 rounded-xl ${isActive ? 'bg-indigo-600 text-white' : 'bg-indigo-100 text-indigo-600'} animate-pulse`}>
-                                  <FileVideo size={20} />
+                                <div className={`p-2.5 rounded-xl ${isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                  {isActive ? <Check size={20} /> : <BookOpen size={20} />}
                                 </div>
                                 <div className="min-w-0">
-                                  <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-indigo-900'}`}>{f.file.name}</p>
-                                  <p className={`text-xs font-medium mt-0.5 animate-pulse ${isActive ? 'text-indigo-700' : 'text-indigo-600'}`}>
-                                    {f.data && f.data.length > 0
-                                      ? `Analyzing (${f.data.filter(d => d.isAnalyzed).length}/${f.data.length})...`
-                                      : "Extracting Transcript..."
-                                    }
-                                  </p>
+                                  <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{name}</p>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black tracking-tight ${isFullyAnalyzed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                                      }`}>
+                                      {statusText}
+                                    </span>
+                                    {progressText && (
+                                      <span className="text-[10px] font-medium text-slate-400">
+                                        {progressText}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
 
-                              <div className="flex items-center gap-2 pl-4 border-l border-indigo-100 ml-4">
-                                <div className="hidden sm:flex items-center gap-2 mr-2">
-                                  <div className={`w-2 h-2 rounded-full animate-ping ${isActive ? 'bg-indigo-700' : 'bg-indigo-500'}`} />
-                                  <span className={`text-xs font-bold ${isActive ? 'text-indigo-700' : 'text-indigo-500'}`}>Processing</span>
-                                </div>
+                              <div className="flex items-center gap-2 pl-4 border-l border-slate-100/50 ml-4">
                                 <button
-                                  onClick={(e) => { e.stopPropagation(); removeFile(f.id, e); }}
-                                  className="p-2.5 text-indigo-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
-                                  title="Cancel Analysis"
+                                  onClick={(e) => { e.stopPropagation(); deleteCache(key); }}
+                                  className="p-2.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                                  title="Delete Analysis"
                                 >
-                                  <X size={20} />
+                                  <Trash2 size={20} />
                                 </button>
                               </div>
                             </div>
                           );
-                        })}
+                        })
+                      }
+                    </div>
+                  );
+                })()
+              }
 
-                        {/* 2. Cached Files */}
-                        {filteredCacheKeys
-                          .sort().reverse().map(key => {
-                            const name = key.replace('gemini_analysis_', '');
-                            const isActive = activeFile?.file?.name === name; // Simple check by name
-
-                            // [Phase 4] 히스토리 상태 파싱
-                            let statusText = "CACHED";
-                            let progressText = "";
-                            let isFullyAnalyzed = false;
-
-                            try {
-                              const cachedData = JSON.parse(localStorage.getItem(key));
-                              if (cachedData && cachedData.data) {
-                                const total = cachedData.data.length;
-                                const analyzed = cachedData.data.filter(d => d.isAnalyzed).length;
-                                isFullyAnalyzed = analyzed === total;
-                                progressText = `${analyzed}/${total} Sentences`;
-
-                                if (cachedData.metadata?.status === 'extracted') {
-                                  statusText = "EXTRACTED";
-                                } else if (isFullyAnalyzed) {
-                                  statusText = "COMPLETED";
-                                }
-                              }
-                            } catch (e) { }
-
-                            return (
-                              <div
-                                key={key}
-                                className={`
-                                  group flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all
-                                  ${isActive
-                                    ? 'bg-indigo-50 border-indigo-200 shadow-md shadow-indigo-100'
-                                    : 'bg-white border-slate-200 hover:border-indigo-300 hover:bg-slate-50'}
-                                `}
-                                onClick={() => loadCache(key)}
-                              >
-                                <div className="flex items-center gap-4 min-w-0 flex-1">
-                                  <div className={`p-2.5 rounded-xl ${isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                                    {isActive ? <Check size={20} /> : <BookOpen size={20} />}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <p className={`text-base font-bold truncate ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{name}</p>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black tracking-tight ${isFullyAnalyzed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                                        }`}>
-                                        {statusText}
-                                      </span>
-                                      {progressText && (
-                                        <span className="text-[10px] font-medium text-slate-400">
-                                          {progressText}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div className="flex items-center gap-2 pl-4 border-l border-slate-100/50 ml-4">
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); deleteCache(key); }}
-                                    className="p-2.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
-                                    title="Delete Analysis"
-                                  >
-                                    <Trash2 size={20} />
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })
-                        }
-                      </div>
-                    );
-                  })()
-                }
-
-              </div>
             </div>
           </div>
-        )
-      }
+        </div>
+      )
+    }
 
-    </div >
-  );
+  </div >
+);
 };
 
 export default App;

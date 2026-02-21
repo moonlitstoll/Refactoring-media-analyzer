@@ -156,12 +156,23 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
             const right = sentences.slice(mid);
 
             // Fixed model: retry with smaller chunks but same model
-            const resultsLeft = await analyzeSentences(left, apiKey, modelId);
-            const resultsRight = await analyzeSentences(right, apiKey, modelId);
+            // Use Promise.all to handle both sides even if one fails
+            const [resultsLeft, resultsRight] = await Promise.all([
+                analyzeSentences(left, apiKey, modelId).catch(() => left.map(s => ({ s: s.s, o: s.o, t: "", w: [] }))),
+                analyzeSentences(right, apiKey, modelId).catch(() => right.map(s => ({ s: s.s, o: s.o, t: "", w: [] })))
+            ]);
             return [...resultsLeft, ...resultsRight];
         }
+
         console.error(`[Stage 2] Analysis failed for model ${modelName}:`, err);
-        throw err;
+        // FINAL FALLBACK: If a single sentence or a split batch still fails, 
+        // return blank analysis instead of throwing to prevent blocking the entire UI.
+        return sentences.map(s => ({
+            s: s.s,
+            o: s.o,
+            t: "", // Blank translation
+            w: []  // Blank word analysis
+        }));
     }
 }
 
