@@ -823,11 +823,11 @@ const App = () => {
    * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
    * Process sentences in batches of 30 to prevent JSON corruption while remaining efficient.
    */
-    const runStage2 = async (fileId, transcript, apiKey, modelId) => {
-    console.log('[Stage 2] Starting High-Reliability 2-Pass Analysis for file ' + fileId + '...');
+  const runStage2 = async (fileId, transcript, apiKey, modelId) => {
+    console.log(`[Stage 2] Starting Ultra-Lightweight 30x5 Analysis for file ${fileId}...`);
     const BATCH_SIZE = 30;
+    const PARALLEL_BATCH_COUNT = 5;
 
-    // 1. Initialize local working data to avoid React's async state lag
     let workingData = JSON.parse(JSON.stringify(transcript));
     const updateGlobalState = (data) => {
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, data: [...data] } : f));
@@ -838,14 +838,9 @@ const App = () => {
       .filter(x => !x.item.isAnalyzed)
       .map(x => x.idx);
 
-    if (pendingIndices.length === 0) {
-      console.log("[Stage 2] No pending sentences to analyze.");
-      return;
-    }
+    if (pendingIndices.length === 0) return;
 
-    // --- PASS 1: FAST BATCH PASS ---
-    console.log('[Stage 2] Starting Pass 1 (Fast Batch)...');
-    const PARALLEL_BATCH_COUNT = 3;
+    // --- SINGLE PASS: 30x5 PARALLEL EXECUTION ---
     for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE * PARALLEL_BATCH_COUNT) {
       const batchPromises = [];
       for (let j = 0; j < PARALLEL_BATCH_COUNT; j++) {
@@ -857,69 +852,55 @@ const App = () => {
 
         batchPromises.push((async () => {
           try {
-            const results = await analyzeSentences(batchData, apiKey, modelId);
-            results.forEach(res => {
-              const targetIdx = workingData.findIndex(item => 
-                 !item.isAnalyzed && 
-                 (item.s === res.s || item.timestamp === res.s) && 
-                 (item.o === res.o || item.text === res.o)
+            // Returns Array of [s, o, t, [[w, m], ...]]
+            const rawResults = await analyzeSentences(batchData, apiKey, modelId);
+
+            // Adapter: Array -> Object mapping
+            rawResults.forEach(raw => {
+              const [s, o, t, words] = raw;
+              const targetIdx = workingData.findIndex(item =>
+                !item.isAnalyzed &&
+                (item.s === s || item.timestamp === s) &&
+                (item.o === o || item.text === o)
               );
               if (targetIdx !== -1) {
-                const sanitized = sanitizeData([res])[0];
-                const hasDetailedContent = sanitized.words && sanitized.words.length > 0;
-                workingData[targetIdx] = { ...workingData[targetIdx], ...sanitized, isAnalyzed: hasDetailedContent };
+                workingData[targetIdx] = {
+                  ...workingData[targetIdx],
+                  t,
+                  words: Array.isArray(words) ? words.map(([w, m]) => ({ w, m })) : [],
+                  isAnalyzed: true
+                };
               }
             });
             updateGlobalState(workingData);
           } catch (err) {
-            console.warn('[Pass 1] Batch starting at ' + start + ' failed, scheduled for Pass 2 cleanup.');
+            console.error(`[Stage 2] Batch error:`, err);
+            // Mark as analyzed even if failed to prevent infinite loops in single-pass
+            batchIndices.forEach(idx => { workingData[idx].isAnalyzed = true; });
           }
         })());
       }
       await Promise.all(batchPromises);
       if (i + BATCH_SIZE * PARALLEL_BATCH_COUNT < pendingIndices.length) {
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
 
-    // --- PASS 2: DEEP SCAN (Recovery) ---
-    console.log('[Stage 2] Pass 1 finished. Starting Pass 2 (Deep Scan for holes)...');
-    let holes = workingData
-      .map((item, idx) => ({ item, idx }))
-      .filter(x => !x.item.isAnalyzed || !x.item.words || x.item.words.length === 0)
-      .map(x => x.idx);
-
-    if (holes.length > 0) {
-      console.log('[Stage 2] Pass 2 identified ' + holes.length + ' missing sentences.');
-      for (let i = 0; i < holes.length; i += 5) {
-        const batchIndices = holes.slice(i, i + 5);
-        const batchData = batchIndices.map(idx => workingData[idx]);
-        try {
-          const results = await analyzeSentences(batchData, apiKey, modelId);
-          results.forEach(res => {
-            const targetIdx = workingData.findIndex(item => 
-               (!item.isAnalyzed || !item.words || item.words.length === 0) && 
-               (item.s === res.s || item.timestamp === res.s) && 
-               (item.o === res.o || item.text === res.o)
-            );
-            if (targetIdx !== -1) {
-              const sanitized = sanitizeData([res])[0];
-              workingData[targetIdx] = { ...workingData[targetIdx], ...sanitized, isAnalyzed: true };
-            }
-          });
-        } catch (err) {
-          console.error('[Pass 2] Critical error for chunk ' + batchIndices, err);
-          batchIndices.forEach(idx => { workingData[idx] = { ...workingData[idx], isAnalyzed: true }; });
-        }
-        updateGlobalState(workingData);
-        await new Promise(r => setTimeout(r, 1500));
-      }
-    }
-
-    // --- FINAL SYNC & 완료 처리 ---
+    // FINAL SYNC & PERSISTENT CACHE
     workingData = workingData.map(item => ({ ...item, isAnalyzed: true }));
     updateGlobalState(workingData);
-    console.log('[Stage 2] Full 2-Pass Analysis completed for file ' + fileId + '.');
+
+    const file = files.find(f => f.id === fileId);
+    if (file) {
+      const cacheKey = `gemini_analysis_${file.file.name}_${file.file.size}`;
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          data: workingData,
+          metadata: { name: file.file.name, size: file.file.size, lastModified: file.file.lastModified, savedAt: Date.now() }
+        }));
+      } catch (e) { }
+    }
+    console.log(`[Stage 2] Ultra-lightweight analysis completed.`);
   };
 
   const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };

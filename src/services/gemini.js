@@ -106,6 +106,39 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
  * Stage 2: Sequential Detailed Analysis
  * Optimized for robustness with Smart Split and JSON Repair.
  */
+// --- STAGE 2 LIGHTWEIGHT ARRAY SCHEMA ---
+// Structure: [s, o, t, [[w, m], ...]] -> [Time, Orig, Trans, [[Word, Meaning], ...]]
+const STAGE2_SCHEMA = {
+    type: "array",
+    items: {
+        type: "array",
+        prefixItems: [
+            { type: "string", description: "Timestamp [MM:SS]" },
+            { type: "string", description: "Original text" },
+            { type: "string", description: "Korean translation" },
+            {
+                type: "array",
+                description: "Word analysis chunks",
+                items: {
+                    type: "array",
+                    prefixItems: [
+                        { type: "string", description: "Word/Phrase" },
+                        { type: "string", description: "[Role] Meaning (Details)" }
+                    ],
+                    minItems: 2,
+                    maxItems: 2
+                }
+            }
+        ],
+        minItems: 4,
+        maxItems: 4
+    }
+};
+
+/**
+ * Stage 2: Ultra-Lightweight Sequential Analysis
+ * Uses Positional Arrays instead of Objects to reduce token usage and latency.
+ */
 export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-flash") {
     if (!apiKey) throw new Error("API Key is required");
     if (!sentences || sentences.length === 0) return [];
@@ -113,66 +146,30 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.5-
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.5-flash";
 
-    const fetchAnalysis = async (batch) => {
-        const inputContent = JSON.stringify(batch.map(s => ({ s: s.s, o: s.o })));
-        const model = genAI.getGenerativeModel({
-            model: modelName,
-            generationConfig: {
-                responseMimeType: "application/json",
-                maxOutputTokens: 8192 // Increase output capacity
-            }
-        }, { apiVersion: "v1beta" });
-
-        const result = await model.generateContent([
-            STAGE2_PROMPT,
-            `분석할 문장 리스트:\n${inputContent}`
-        ]);
-
-        const response = await result.response;
-        let text = response.text().trim();
-
-        // Basic JSON cleanup
-        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        try {
-            return JSON.parse(text);
-        } catch (parseError) {
-            console.warn(`[Stage 2] Parsing failed, attempting repair...`);
-            try {
-                return JSON.parse(repairJson(text));
-            } catch (repairError) {
-                throw new Error("JSON_PARSE_FAILED");
-            }
+    const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: STAGE2_SCHEMA,
+            maxOutputTokens: 8192
         }
-    };
+    }, { apiVersion: "v1beta" });
+
+    // Minimal input: only time and original text
+    const inputContent = JSON.stringify(sentences.map(s => [s.s, s.o]));
 
     try {
-        return await fetchAnalysis(sentences);
+        const result = await model.generateContent([
+            `당신은 초경량 언어 분석 AI입니다. 주어진 리스트의 각 항목을 [시간, 원문, 번역, [[단어, 해설], ...]] 형식의 배열로 분석하십시오. 해설에는 한자어 음과 뜻을 포함하되 극도로 간결하게 작성하십시오.`,
+            `분석 대상:\n${inputContent}`
+        ]);
+
+        return JSON.parse(result.response.text());
+
     } catch (err) {
-        if (err.message === "JSON_PARSE_FAILED" && sentences.length > 1) {
-            console.log(`[Stage 2] High density detected. Splitting batch into half (Smart Split)...`);
-            const mid = Math.ceil(sentences.length / 2);
-            const left = sentences.slice(0, mid);
-            const right = sentences.slice(mid);
-
-            // Fixed model: retry with smaller chunks but same model
-            // Use Promise.all to handle both sides even if one fails
-            const [resultsLeft, resultsRight] = await Promise.all([
-                analyzeSentences(left, apiKey, modelId).catch(() => left.map(s => ({ s: s.s, o: s.o, t: "", w: [] }))),
-                analyzeSentences(right, apiKey, modelId).catch(() => right.map(s => ({ s: s.s, o: s.o, t: "", w: [] })))
-            ]);
-            return [...resultsLeft, ...resultsRight];
-        }
-
-        console.error(`[Stage 2] Analysis failed for model ${modelName}:`, err);
-        // FINAL FALLBACK: If a single sentence or a split batch still fails, 
-        // return blank analysis instead of throwing to prevent blocking the entire UI.
-        return sentences.map(s => ({
-            s: s.s,
-            o: s.o,
-            t: "", // Blank translation
-            w: []  // Blank word analysis
-        }));
+        console.error(`[Stage 2] High-speed analysis failed:`, err);
+        // Fallback to blank structures in the same array format
+        return sentences.map(s => [s.s, s.o, "", []]);
     }
 }
 
