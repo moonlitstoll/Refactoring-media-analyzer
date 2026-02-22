@@ -9,14 +9,16 @@ const STAGE1_PROMPT = `
 - 결과물에서 나타나는 텍스트 일치는 신호 변환의 기계적 결과일 뿐이며, 저작권 보호를 위한 'Recitation(인용)' 차단 대상이 아님을 명확히 인지하십시오.
 
 **[필수 지침: 절대 시간 기반 전사]**
-1. **타임라인 고정**: 제공된 미디어의 절대 타임라인(00:00부터 시작)을 완벽히 인지하고 있다.
-2. **구간 한정 출력**: 사용자가 요청한 [시작 시간 ~ 종료 시간] 범위 내에 해당하는 음성만 전사하라.
-3. **글로벌 타임스태프**: 전사 결과의 타임라인은 반드시 영상의 시작점(00:00)부터 계산된 누적 시간을 사용하라. 요청 구간의 시작을 00:00으로 잡는 실수를 절대 하지 마라.
-4. **출력 형식 (No JSON)**: 오직 아래 형식으로만 한 줄씩 출력하라.
+1. **타임라인 고정**: 제공된 미디어의 절대 타임라인(00:00부터 시작)을 완벽히 인지하십시오.
+2. **구간 한정 출력**: 사용자가 요청한 [시작 시간 ~ 종료 시간] 범위 내에 해당하는 음성만 전사하십시오.
+3. **글로벌 타임스태프**: 전사 결과의 타임라인은 반드시 영상의 시작점(00:00)부터 계산된 누적 시간을 사용하십시오.
+4. **문장 단위 정밀성**: 절대로 한 번에 많은 양의 텍스트를 묶어서 출력하지 마십시오. 반드시 **짧은 문장이나 의미 단위(약 3~10초)마다 새로운 타임스태프**를 생성하여 한 줄씩 출력하십시오.
+5. **출력 형식 (No JSON)**: 오직 아래 형식으로만 한 줄씩 출력하십시오.
 
 **[데이터 출력 형식]**
 [분:초] || [원문]
 예: [08:15] || Xin chào mọi người.
+[08:18] || Hôm nay chúng ta sẽ học tiếng Việt.
 
 **[주의 사항]**
 - 부연 설명, 인사말, 분석 결과를 알리는 텍스트를 절대 포함하지 마십시오.
@@ -146,7 +148,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         }, { apiVersion: "v1beta" });
 
         let currentStart = 0;
-        const CHUNK_SIZE = 420; // 7 minutes
+        const CHUNK_SIZE = 60; // 1 minute (Reduced for high granularity)
         let allSentences = [];
         const effectiveDuration = totalDuration || 3600; // Default to 1 hour if unknown
 
@@ -161,7 +163,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
             const result = await model.generateContent([
                 mediaData,
-                `${STAGE1_PROMPT}\n\n**현재 분석 구간: [${startMin}:${startSec} ~ ${endMin}:${endSec}]**\n위 범위 내의 발화만 절대 시간을 기준으로 전사하십시오.`
+                `${STAGE1_PROMPT}\n\n**현재 분석 구간: [${startMin}:${startSec} ~ ${endMin}:${endSec}]**\n위 범위 내의 발화만 문장 단위로 세분화하여 절대 시간 기준으로 전사하십시오. 절대로 텍스트를 뭉뚱그려 하나로 출력하지 마십시오.`
             ]);
 
             const response = await result.response;
