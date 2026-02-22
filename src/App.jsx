@@ -79,12 +79,11 @@ const TranscriptItem = memo(({
 
     const isAutoAdvancing = isActive && !isGlobalLooping;
 
-    // SCROLL BLOCK: In looping mode, we ONLY scroll if it's a manual jump.
-    // In normal mode, we also scroll on auto-advancing.
-    const shouldScroll = isActive && (isManualJump || (isAutoAdvancing && !isGlobalLooping));
+    // [Phase 4] Snap Scroll: Always snap if it's a new active OR manual jump
+    // We remove the !isGlobalLooping restriction for the initial snap to match user expectation.
+    const shouldScroll = isActive && (isManualJump || isAutoAdvancing || (isGlobalLooping && isManualJump));
 
     if (shouldScroll && itemRef.current) {
-      // scrollIntoView will respect the scroll-margin-top defined in CSS
       itemRef.current.scrollIntoView({
         behavior: 'auto',
         block: 'start'
@@ -104,7 +103,7 @@ const TranscriptItem = memo(({
   return (
     <div
       ref={itemRef}
-      style={{ scrollMarginTop: '16px' }} // [Phase 4] 정밀 스냅: 연두색 위치(화면 상단 여백) 확보
+      style={{ scrollMarginTop: '100px' }} // [Phase 4] 정밀 스냅: 헤더 아래 연두색 영역 확보
       className={`
         group relative transition-all duration-300 ease-out mb-2 rounded-xl border border-l-[4px] p-2.5 sm:px-4 sm:py-5
         ${isActive
