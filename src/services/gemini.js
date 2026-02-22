@@ -15,13 +15,14 @@ const STAGE1_PROMPT = `
 1. **반드시** 아래의 형식을 준수하여 한 줄에 하나씩 데이터만 출력하십시오.
    [MM:SS] || 원문
    예: [00:15] || Xin chào mọi người.
-2. **JSON 괄호({ })나 따옴표 규칙을 절대 사용하지 마십시오.** 
-3. 중복이나 불필요한 미사여구 없이 오직 데이터만 출력하십시오.
+2. **소리가 없는 구간이나 음악만 나오는 구간은 아예 행을 생성하지 마십시오.** 
+3. **(Inaudible), (음악), (분석 불가)와 같은 주석이나 설명은 절대로 포함하지 마십시오.** 오직 실제 발화된 외국어 원문만 출력하십시오.
+4. JSON 형식을 절대 사용하지 마십시오.
 
 **[핵심 분석 지침]**
-1. **완전성 보장 (Completeness)**: 영상의 뒷부분이 잘리지 않도록 마지막 대사까지 모두 기록하십시오.
-2. **시간 역행 절대 금지**: 모든 문장의 시작 시간은 반드시 이전 문장보다 커야 합니다.
-3. **원문 보존**: 들리는 그대로의 외국어 원문만 추출하십시오. (번역/분석 금지)
+1. **완전성 보장**: 영상의 뒷부분이 잘리지 않도록 마지막 대사까지 모두 기록하십시오.
+2. **순수 데이터**: 주석 없이 오직 대사만 추출하십시오.
+3. **시간 역행 금지**: 모든 문장의 시작 시간은 반드시 이전 문장보다 커야 합니다.
 `;
 
 /**
@@ -95,13 +96,25 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
         const parsed = [];
         const pattern = /\[(\d{1,2}:?\d{1,2}:?\d{1,2})\]\s*\|\|\s*(.*)/;
 
+        // 필터링 키워드
+        const noiseKeywords = ["inaudible", "음악", "분석 불가", "가사", "대사 없음"];
+
         for (const line of lines) {
             const match = line.match(pattern);
             if (match) {
-                parsed.push({
-                    s: match[1],
-                    o: match[2].trim()
-                });
+                const text = match[2].trim();
+
+                // 노이즈 필터링: 괄호가 전체를 감싸고 있거나 특정 키워드가 포함된 경우 제외
+                const isNoise = noiseKeywords.some(k => text.toLowerCase().includes(k)) ||
+                    (text.startsWith('(') && text.endsWith(')')) ||
+                    (text.startsWith('[') && text.endsWith(']'));
+
+                if (!isNoise && text.length > 0) {
+                    parsed.push({
+                        s: match[1],
+                        o: text
+                    });
+                }
             }
         }
 
