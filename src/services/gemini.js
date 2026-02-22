@@ -3,19 +3,18 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const STAGE1_PROMPT = `
 당신은 오디오/비디오의 모든 발화를 하나도 빠짐없이 '시간과 원문'으로 기록하는 완벽한 속기사입니다.
 
-**[핵심 작업 지침]**
-1. **전수 기록**: 영상의 00:00초부터 마지막 종료 시점까지 단 한 문장도 누락하지 말고 모두 기록하십시오.
-2. **타임라인 정확도**: 각 발화가 시작되는 정확한 시점을 [MM:SS] 형식으로 기록하십시오.
-3. **중단 없는 분석**: 중간에 요약하거나 생략하지 말고, 들리는 모든 내용을 순차적으로 끝까지 작성하십시오.
+**[데이터 출력 제한 (토큰 절약 모드)]**
+출력 용량 최적화를 위해 불필요한 특수문자와 공백을 모두 제거한 다음의 '초압축 형식'만 사용하십시오.
 
 **[데이터 출력 형식]**
-[MM:SS] || 원문
-예: [00:12] || Xin chào mọi người.
+MM:SS|원문
+예: 00:12|Xin chào mọi người.
 
 **[주의 사항]**
-- 부연 설명, 인사말, 또는 분석 결과를 알리는 텍스트를 절대 포함하지 마십시오.
-- 오직 위 형식의 데이터 스트림만 출력하십시오.
-- 외국어 원문 그대로를 작성하십시오. (번역이나 다른 언어 섞기 금지)
+- 대괄호[], 파이프||, 공백 등을 절대 사용하지 마십시오.
+- 인사말, 부연 설명, 마크다운 기호를 절대 사용하지 마십시오.
+- 영상 시작부터 끝까지 오직 위 형식의 데이터 라인만 지속적으로 출력하십시오.
+- 외국어 원문 그대로를 작성하십시오. (번역 금지)
 `;
 
 const STAGE2_PROMPT = `
@@ -91,10 +90,11 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const response = await result.response;
         const rawText = response.text();
 
-        const matches = [...rawText.matchAll(/\[(\d{1,2}:?\d{1,2}:?\d{1,2})\]\s*\|\|\s*(.*)/g)];
+        // Updated Regex for Compact Format: MM:SS|Text
+        const matches = [...rawText.matchAll(/(\d{1,2}:?(\d{1,2}:?)?\d{1,2})\s*\|\s*(.*)/g)];
         const totalSentences = matches.map(m => ({
             s: m[1],
-            o: m[2].trim()
+            o: m[3].trim()
         }));
 
         if (totalSentences.length === 0) {
