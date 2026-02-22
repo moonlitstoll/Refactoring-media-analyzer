@@ -73,7 +73,6 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                maxOutputTokens: 8192,
                 temperature: 0.1
             },
             safetySettings
