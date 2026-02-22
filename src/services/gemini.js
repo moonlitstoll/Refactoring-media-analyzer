@@ -10,22 +10,16 @@ const STAGE1_PROMPT = `
 **[수행 미션]**
 오디오/비디오를 듣고 모든 발화 내용을 타임라인과 함께 기록하십시오.
 
-**[핵심 분석 지침 - STRICT RULES]**
-1. **시간 역행 및 중복 절대 금지 (Strict Linear Progress)**:
-   - 모든 문장의 시작 시간(s)은 **반드시** 이전 문장의 시간보다 커야 합니다. ($T_{n} < T_{n+1}$) 단 1초라도 이전 시점으로 돌아가는 데이터를 생성하지 마십시오.
-   - 앞부분에서 이미 분석한 내용(예: 특정 음식 리뷰 등)과 유사한 음성이 들리더라도, 과거 데이터를 복제하지 마십시오. 모든 문장은 현재 오디오 소스의 독립적인 결과물이어야 합니다.
-2. **오디오 및 시각 정보 결합 (Multimodal Analysis)**:
-   - 오직 음성 신호에만 의존하기보다는, 영상 내에 포함된 자막이나 텍스트 정보가 있다면 이를 적극 활용하여 전사 정확도를 높이십시오.
-   - 다만, 현재 분석 중인 타임라인의 실제 발화 내용과 일치하는 데이터만을 추출해야 하며, 해당 구간과 관계없는 과거/미래의 데이터를 끌어다 쓰지 마십시오.
+**[데이터 출력 규칙 - 구분자 방식]**
+1. **반드시** 아래의 형식을 준수하여 한 줄에 하나씩 데이터만 출력하십시오.
+   [MM:SS] || 원문
+   예: [00:15] || Xin chào mọi người.
+2. **JSON 괄호({ })나 따옴표 규칙을 절대 사용하지 마십시오.** 
+3. 중복이나 불필요한 미사여구(예: "네, 알겠습니다") 없이 오직 데이터만 출력하십시오.
 
-**[데이터 출력 규칙]**
-1. **포인트 매칭**: 문장이 시작되는 시점의 타임라인만 기록하십시오. ([MM:SS] 형식)
-2. **원문 보존**: 들리는 그대로의 외국어 원문만 추출하십시오.
-3. **경량화**: 이 단계에서는 **'번역(t)'이나 '단어 분석(w)'을 절대 수행하지 마십시오.** 오직 시간(s)과 원문(o)만 포함하십시오.
-
-**[JSON 응답 규격]**
-- JSON Array: [{ "s": "MM:SS", "o": "원문" }]
-- 부연 설명 없이 유효한 JSON Array만 출력하십시오.
+**[핵심 분석 지침]**
+1. **시간 역행 절대 금지**: 모든 문장의 시작 시간은 반드시 이전 문장보다 커야 합니다.
+2. **원문 보존**: 들리는 그대로의 외국어 원문만 추출하십시오. (번역/분석 금지)
 `;
 
 /**
@@ -70,15 +64,15 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
     // Use the selected model (No more sequential retry as requested)
     const modelName = getModels(modelId)[0] || "gemini-2.5-flash";
 
-    console.log(`[Stage 1] Analyzing with model: ${modelName}. File size: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`[Stage 1] Analyzing with model: ${modelName} using Delimiter Format.`);
 
     try {
         const base64Data = await fileToGenerativePart(file);
         const mimeType = file.type || "audio/mpeg";
 
         const model = genAI.getGenerativeModel({
-            model: modelName,
-            generationConfig: { responseMimeType: "application/json" }
+            model: modelName
+            // JSON 응답이 아니므로 generationConfig에서 responseMimeType 제거
         }, { apiVersion: "v1beta" });
 
         // Note: For very large files (>20MB), inlineData might fail.
@@ -89,14 +83,35 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
         ]);
 
         const response = await result.response;
-        let text = response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(text);
+        const rawText = response.text();
+
+        // 정규식을 이용해 [시간] || 원문 패턴을 라인별로 추출
+        const lines = rawText.split('\n');
+        const parsed = [];
+        const pattern = /\[(\d{1,2}:?\d{1,2}:?\d{1,2})\]\s*\|\|\s*(.*)/;
+
+        for (const line of lines) {
+            const match = line.match(pattern);
+            if (match) {
+                parsed.push({
+                    s: match[1],
+                    o: match[2].trim()
+                });
+            }
+        }
+
+        if (parsed.length === 0) {
+            console.error("[Stage 1] No valid chunks found in response. Raw text sample:", rawText.substring(0, 200));
+            throw new Error("분석 결과에서 데이터를 찾을 수 없습니다. (형식 오류)");
+        }
+
+        console.log(`[Stage 1] Successfully extracted ${parsed.length} sentences.`);
         return normalizeTimestamps(parsed);
     } catch (err) {
         console.error(`Stage 1 Error with ${modelName}:`, err);
         // Better error message for payload limit
         if (err.message?.includes('fetch') || err.message?.includes('payload')) {
-            throw new Error(`File too large for direct analysis. Please try a shorter or lower-resolution file.`);
+            throw new Error(`File too large for direct analysis. Please try a shorter file.`);
         }
         throw err;
     }
