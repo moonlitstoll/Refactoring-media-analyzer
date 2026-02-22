@@ -91,8 +91,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const response = await result.response;
         const rawText = response.text();
 
-        // Standard Format: [MM:SS] || Text
-        const matches = [...rawText.matchAll(/\[(\d{1,2}:?(\d{1,2}:?)?\d{1,2})\]\s*\|\|\s*(.*)/g)];
+        // Standard Delimiter Format: MM:SS || Text (Brackets optional for robustness)
+        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
 
         // Noise Filtering: Remove AI commentary like "Inaudible", "Music", etc.
         const noiseKeywords = ["inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음"];
