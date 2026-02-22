@@ -121,11 +121,13 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName}`);
 
     try {
+        // [수정] 사용자의 요청에 따라 10분(600초) 이하 파일은 업로드 없이 inlineData 방식으로 처리 (RECITATION 오류 회피용)
         let mediaData;
-        const UPLOAD_THRESHOLD = 600; // 10 minutes
-
-        if (totalDuration >= UPLOAD_THRESHOLD) {
-            // 1. Upload via File API (Required for efficient multi-segment querying of long files)
+        if (totalDuration > 0 && totalDuration <= 600) {
+            console.log(`[Stage 1] Short media (${totalDuration}s <= 600s). Using inlineData for stability.`);
+            mediaData = await fileToGenerativePart(file);
+        } else {
+            console.log(`[Stage 1] Long media or unknown duration. Using File API upload.`);
             const fileUri = await uploadToGemini(file, apiKey);
             mediaData = {
                 fileData: {
@@ -133,10 +135,6 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     fileUri: fileUri
                 }
             };
-        } else {
-            // 2. Use Inline Data (Faster for short files, no server upload needed)
-            console.log(`[Stage 1] Short media detected (${totalDuration}s). Using inlineData.`);
-            mediaData = await fileToGenerativePart(file);
         }
 
         const model = genAI.getGenerativeModel({
@@ -170,9 +168,17 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
             // Check for recitation or other block reasons
             if (response.candidates && response.candidates[0].finishReason === 'RECITATION') {
-                console.warn(`[Stage 1] Segment ${startMin}:${startSec} blocked due to RECITATION. Attempting to proceed.`);
-                // In some cases, we might want to try a slightly different prompt or just alert the user.
-                // For now, per user request, we aim to prevent this with the prompt, but we handle it to avoid crashing.
+                console.warn(`[Stage 1] Segment ${startMin}:${startSec} blocked due to RECITATION. skipping text extraction.`);
+                // Return a placeholder to prevent crash and let user know
+                const segmentSentences = [{
+                    s: `${startMin}:${startSec}`,
+                    o: "(저작권 보호 정책으로 인해 이 구간의 전사가 제한되었습니다 - Recitation Blocked)"
+                }];
+                allSentences = [...allSentences, ...segmentSentences];
+                if (onProgress) onProgress(normalizeTimestamps(allSentences));
+
+                currentStart += CHUNK_SIZE;
+                continue;
             }
 
             const rawText = response.text();
