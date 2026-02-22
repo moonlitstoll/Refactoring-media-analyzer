@@ -13,7 +13,9 @@ const STAGE1_PROMPT = `
 1. **인간 음성 우선**: 배경 음악, 기계음, 단순 소음보다 사람의 목소리와 가사 가 전달되는 구간을 최우선으로 기록하십시오.
 2. **타임라인 고정**: 전체 타임라인(00:00부터 끝까지)을 엄격히 준수하며 누적 시간을 사용하십시오.
 3. **학습용 문장 단위**: 쉐도잉 훈련에 적합하도록 짧은 문장이나 의미 단위(약 3~10초)로 줄바꿈 및 타임스태프를 부여하십시오.
-4. **출력 형식 (No JSON)**: [분:초] || [원문] 형식으로만 한 줄씩 출력하십시오.
+4. **출력 형식 (No JSON)**: [시작분:초.밀리초 - 종료분:초.밀리초] || [원문] 형식으로만 한 줄씩 출력하십시오.
+    - 예시: [00:01.25 - 00:04.10] || Hello how are you?
+    - 반드시 모든 타임라인 항목에 대해 종료 시간까지 추정하여 구간으로 표시하십시오.
 
 **[주의 사항]**
 - 부연 설명, 인사말, 분석 시작 알림 등을 절대 포함하지 마십시오.
@@ -107,8 +109,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
         const rawText = response.text();
 
-        // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
-        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
+        // High-Precision Regex for [MM:SS.ms - MM:SS.ms] || Text
+        // Supports optional bracket, HH:MM:SS.ms or MM:SS.ms
+        const matches = [...rawText.matchAll(/(?:\[)?([\d:.]+)\s*-\s*([\d:.]+)(?:\])?\s*\|\|\s*(.*)/g)];
 
         // Noise Filtering
         const noiseKeywords = [
@@ -117,7 +120,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         ];
         const allSentences = matches
             .map(m => ({
-                s: m[1],
+                s: m[1], // startTime string
+                e: m[2], // endTime string
                 o: m[3].trim()
             }))
             .filter(item => {
@@ -160,15 +164,32 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
 }
 
 function normalizeTimestamps(data) {
+    const parse = (t) => {
+        if (!t) return 0;
+        const parts = t.replace(/[\[\]\s]/g, '').split(':').reverse();
+        // [SS.ms, MM, HH]
+        const s = parseFloat(parts[0]) || 0;
+        const m = parseFloat(parts[1]) || 0;
+        const h = parseFloat(parts[2]) || 0;
+        return (h * 3600) + (m * 60) + s;
+    };
+
     return data.map(item => {
-        let s = String(item.s || "").replace(/[\[\]\s]/g, '').split(/[-~]/)[0];
-        if (s.includes(':')) {
-            const p = s.split(':');
-            s = `${p[0].padStart(2, '0')}:${p[1].split('.')[0].padStart(2, '0')}`;
-        }
-        return { ...item, s };
-    }).sort((a, b) => {
-        const parse = t => t.split(':').reduce((acc, v) => (60 * acc) + +v, 0);
-        return parse(a.s) - parse(b.s);
-    });
+        const startSeconds = parse(item.s);
+        const endSeconds = parse(item.e);
+
+        // 정밀한 타임스탬프 형식 유지 (표시용)
+        const formatTime = (sec) => {
+            const m = Math.floor(sec / 60);
+            const s = (sec % 60).toFixed(2);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(5, '0')}`;
+        };
+
+        return {
+            ...item,
+            s: formatTime(startSeconds), // 표시용 문자열 (00:00.00)
+            v: startSeconds,            // 내부 계산용 (부동소수점)
+            e: endSeconds               // 종료 시간 (부동소수점)
+        };
+    }).sort((a, b) => a.v - b.v);
 }

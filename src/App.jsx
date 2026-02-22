@@ -202,7 +202,7 @@ const TranscriptItem = memo(({
 const App = () => {
   const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
-  const BUFFER_SECONDS = 0.8; // Audio Buffer (0.8s)
+  const BUFFER_SECONDS = 0.1; // 정밀 싱크를 위해 버퍼 축소 (0.8s -> 0.1s)
 
   // Multi-file state
   const [files, setFiles] = useState([]);
