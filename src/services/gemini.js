@@ -7,19 +7,21 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const STAGE1_PROMPT = `
 당신은 외국어 미디어에서 **'발화 시점과 원문'**을 추출하는 전문 속기 AI입니다.
 
-**[수행 미션]**
-오디오/비디오를 듣고 모든 발화 내용을 타임라인과 함께 기록하십시오.
+**[수행 미션: 전수 조사 및 전체 추출]**
+오디오/비디오를 처음부터 끝까지 정밀하게 듣고 모든 발화 내용을 타임라인과 함께 기록하십시오. 
+**영상 중간을 건너뛰거나 요약하지 말고, 영상의 마지막 1초(End of File)까지 빠짐없이 모든 대사를 추출하는 것이 가장 중요한 미션입니다.**
 
 **[데이터 출력 규칙 - 구분자 방식]**
 1. **반드시** 아래의 형식을 준수하여 한 줄에 하나씩 데이터만 출력하십시오.
    [MM:SS] || 원문
    예: [00:15] || Xin chào mọi người.
 2. **JSON 괄호({ })나 따옴표 규칙을 절대 사용하지 마십시오.** 
-3. 중복이나 불필요한 미사여구(예: "네, 알겠습니다") 없이 오직 데이터만 출력하십시오.
+3. 중복이나 불필요한 미사여구 없이 오직 데이터만 출력하십시오.
 
 **[핵심 분석 지침]**
-1. **시간 역행 절대 금지**: 모든 문장의 시작 시간은 반드시 이전 문장보다 커야 합니다.
-2. **원문 보존**: 들리는 그대로의 외국어 원문만 추출하십시오. (번역/분석 금지)
+1. **완전성 보장 (Completeness)**: 영상의 뒷부분이 잘리지 않도록 마지막 대사까지 모두 기록하십시오.
+2. **시간 역행 절대 금지**: 모든 문장의 시작 시간은 반드시 이전 문장보다 커야 합니다.
+3. **원문 보존**: 들리는 그대로의 외국어 원문만 추출하십시오. (번역/분석 금지)
 `;
 
 /**
@@ -71,8 +73,11 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.5-flas
         const mimeType = file.type || "audio/mpeg";
 
         const model = genAI.getGenerativeModel({
-            model: modelName
-            // JSON 응답이 아니므로 generationConfig에서 responseMimeType 제거
+            model: modelName,
+            generationConfig: {
+                maxOutputTokens: 8192, // 장문 응답 보장을 위해 최대치 설정
+                temperature: 0.1       // 정확도 향상을 위해 낮은 값 설정
+            }
         }, { apiVersion: "v1beta" });
 
         // Note: For very large files (>20MB), inlineData might fail.
