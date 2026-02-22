@@ -71,17 +71,24 @@ const TranscriptItem = memo(({
   // A. If user manually triggered a jump (manualScrollNonce changed) -> ALWAYS scroll
   // B. If auto-advancing in normal mode (Looping OFF) -> scroll
   // C. If Looping -> IGNORE all automatic scroll triggers.
+  const prevActiveRef = useRef(isActive);
   const prevNonceRef = useRef(manualScrollNonce);
 
   useEffect(() => {
+    const becameActive = isActive && !prevActiveRef.current;
     const isManualJump = manualScrollNonce !== prevNonceRef.current;
-    prevNonceRef.current = manualScrollNonce; // Update for next comparison
 
+    // Update refs for next comparison
+    prevActiveRef.current = isActive;
+    prevNonceRef.current = manualScrollNonce;
+
+    // Normal mode auto-advance scroll
     const isAutoAdvancing = isActive && !isGlobalLooping;
 
-    // [Phase 4] Snap Scroll: Always snap if it's a new active OR manual jump
-    // We remove the !isGlobalLooping restriction for the initial snap to match user expectation.
-    const shouldScroll = isActive && (isManualJump || isAutoAdvancing || (isGlobalLooping && isManualJump));
+    // Trigger scroll if:
+    // 1. It just became active (initial click, manual jump, or auto-advance)
+    // 2. A manual jump occurred (to ensure snap even if already active)
+    const shouldScroll = isActive && (becameActive || isManualJump || isAutoAdvancing);
 
     if (shouldScroll && itemRef.current) {
       itemRef.current.scrollIntoView({
@@ -103,7 +110,7 @@ const TranscriptItem = memo(({
   return (
     <div
       ref={itemRef}
-      style={{ scrollMarginTop: '100px' }} // [Phase 4] 정밀 스냅: 헤더 아래 연두색 영역 확보
+      style={{ scrollMarginTop: '24px' }} // [Phase 4] 가독성을 위한 상단 여백 (1.5rem)
       className={`
         group relative transition-all duration-300 ease-out mb-2 rounded-xl border border-l-[4px] p-2.5 sm:px-4 sm:py-5
         ${isActive
@@ -1166,8 +1173,8 @@ const App = () => {
         </div>
       )}
 
-      {/* Header - Now Sticky & Compact */}
-      <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 flex-none h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6">
+      {/* Header - Now Relative (Natural Flex Flow) */}
+      <header className="relative z-50 bg-white/80 border-b border-slate-100 flex-none h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6">
         {/* Left: Home Button (Back to Upload) */}
         <button
           onClick={() => {
