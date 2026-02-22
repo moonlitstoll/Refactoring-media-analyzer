@@ -1,11 +1,10 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const STAGE1_PROMPT = `
-당신은 오디오/비디오의 특정 구간에서 '시간과 원문'만 추출하는 전문 속기사입니다.
+당신은 오디오/비디오에서 '시간과 원문'만 추출하는 전문 속기사입니다.
 
 **[작업 지침]**
-1. 지정된 시간 구간 내에서 들리는 모든 발화를 하나도 빠짐없이 고유한 타임라인과 함께 기록하십시오.
-2. 이전/이후 구간과 겹치더라도 현재 구간 내의 모든 내용을 독립적으로 기록하십시오.
+오디오/비디오를 처음부터 끝까지 듣고, 들리는 모든 발화를 하나도 빠짐없이 고유한 타임라인과 함께 기록하십시오.
 
 **[데이터 출력 형식]**
 [MM:SS] || 원문
@@ -81,41 +80,50 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
+    console.log(`[Stage 1] Single Full Analysis with model: ${modelName}`);
+
     try {
+        // 1. Upload file via File API (Better for large files > 20MB)
         const fileUri = await uploadToGemini(file, apiKey);
-        const model = genAI.getGenerativeModel({ model: modelName }, { apiVersion: "v1beta" });
 
-        const CHUNK_SIZE = 5; // 5 minutes
-        const totalSentences = [];
-        let currentStart = 0;
-        let emptyCount = 0;
-
-        while (emptyCount < 2 && currentStart < 600) {
-            const range = `${currentStart}:00 ~ ${currentStart + CHUNK_SIZE}:00`;
-            console.log(`Analyzing: ${range}`);
-
-            const result = await model.generateContent([
-                { fileData: { mimeType: file.type || "video/mp4", fileUri } },
-                `${STAGE1_PROMPT}\n현재 구간: ${range}`
-            ]);
-
-            const rawText = await result.response.text();
-            const matches = [...rawText.matchAll(/\[(\d{1,2}:?\d{1,2}:?\d{1,2})\]\s*\|\|\s*(.*)/g)];
-
-            if (matches.length === 0) {
-                emptyCount++;
-            } else {
-                emptyCount = 0;
-                matches.forEach(m => totalSentences.push({ s: m[1], o: m[2].trim() }));
+        const model = genAI.getGenerativeModel({
+            model: modelName,
+            generationConfig: {
+                maxOutputTokens: 8192,
+                temperature: 0.1
             }
-            currentStart += CHUNK_SIZE;
+        }, { apiVersion: "v1beta" });
+
+        // 2. Single Analysis Call
+        const result = await model.generateContent([
+            {
+                fileData: {
+                    mimeType: file.type || "video/mp4",
+                    fileUri: fileUri
+                }
+            },
+            `${STAGE1_PROMPT}\n\n**영상 전체를 처음부터 끝까지 분석하여 모든 발화를 누락 없이 추출하십시오.**`
+        ]);
+
+        const response = await result.response;
+        const rawText = response.text();
+
+        const matches = [...rawText.matchAll(/\[(\d{1,2}:?\d{1,2}:?\d{1,2})\]\s*\|\|\s*(.*)/g)];
+        const totalSentences = matches.map(m => ({
+            s: m[1],
+            o: m[2].trim()
+        }));
+
+        if (totalSentences.length === 0) {
+            console.error("[Stage 1] Raw text preview:", rawText.substring(0, 500));
+            throw new Error("분석 결과에서 데이터를 찾을 수 없습니다.");
         }
 
-        const uniqueMap = new Map();
-        totalSentences.forEach(s => uniqueMap.set(`${s.s}_${s.o}`, s));
-        return normalizeTimestamps(Array.from(uniqueMap.values()));
+        console.log(`[Stage 1] Successfully extracted ${totalSentences.length} sentences.`);
+
+        return normalizeTimestamps(totalSentences);
     } catch (err) {
-        console.error("Stage 1 Error:", err);
+        console.error(`Stage 1 Single Call Error:`, err);
         throw err;
     }
 }
