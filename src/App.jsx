@@ -202,7 +202,7 @@ const TranscriptItem = memo(({
 const App = () => {
   const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
-  const BUFFER_SECONDS = 0.8; // Audio Buffer (0.8s)
+  const BUFFER_SECONDS = 1.0; // Audio Buffer (1.0s)
 
   // Multi-file state
   const [files, setFiles] = useState([]);
@@ -532,7 +532,7 @@ const App = () => {
       triggerManualScroll();
       // Global Loop 루프 타겟 업데이트
       loopTargetIdxRef.current = index;
-      seekTo(Math.max(0, activeFile.data[index].seconds - BUFFER_SECONDS));
+      seekTo(Math.max(0, activeFile.data[index].seconds - 1.0));
     }
   }, [seekTo, activeFile, triggerManualScroll]);
 
@@ -561,7 +561,7 @@ const App = () => {
     // 1. Filter: Find all items that have started (Time <= T)
     const candidates = data
       .map((item, idx) => ({ ...item, idx }))
-      .filter(item => item.startSeconds <= currentSeconds + 0.005); // 5ms buffer
+      .filter(item => item.startSeconds <= currentSeconds);
 
     // 2. Determine: The LATEST (largest startSeconds) started item is our active card
     if (candidates.length === 0) return 0;
@@ -606,7 +606,7 @@ const App = () => {
           const nextItem = data[targetIdx + 1];
           const end = nextItem
             ? Math.min(nextItem.seconds, item.seconds + 5.0) + 1.0
-            : (v.duration || 999999);
+            : (v.duration ? v.duration + 1.0 : 999999);
 
           // [Phase 4] 수동 시크(Seek) 대응: 사용자가 루프 범위 밖으로 강제 이동했다면 루프 타겟 재설정
           if (v.currentTime < start - 2.0 || v.currentTime > end + 2.0) {
