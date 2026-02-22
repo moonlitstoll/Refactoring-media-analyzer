@@ -85,7 +85,7 @@ const TranscriptItem = memo(({
 
     if (shouldScroll && itemRef.current) {
       itemRef.current.scrollIntoView({
-        behavior: 'smooth', // 부드러운 이동을 위해 smooth 권장 (취향에 따라 auto 가능)
+        behavior: 'auto', // 사용자 요청에 따라 '딱' 붙는 느낌을 위해 auto로 변경
         block: 'start'
       });
     }
