@@ -85,7 +85,7 @@ const TranscriptItem = memo(({
 
     if (shouldScroll && itemRef.current) {
       itemRef.current.scrollIntoView({
-        behavior: 'auto',
+        behavior: 'smooth', // 부드러운 이동을 위해 smooth 권장 (취향에 따라 auto 가능)
         block: 'start'
       });
     }
@@ -1259,27 +1259,6 @@ const App = () => {
                   // key={activeFileId} forces a full remount of this container when file changes
                   <div key={activeFileId} className="space-y-2 min-h-[200px] relative">
                     <ErrorBoundary>
-                      {/* [Phase 4] 한문장 반복 시 최상단에 스틱(이동 가능한 붙기) 처리 */}
-                      {isGlobalLoopActive && currentSentenceIdx !== -1 && transcriptData[currentSentenceIdx] && (
-                        <TranscriptItem
-                          key={`pinned-${activeFileId}-${currentSentenceIdx}-${transcriptData[currentSentenceIdx].seconds}`}
-                          item={transcriptData[currentSentenceIdx]}
-                          idx={currentSentenceIdx}
-                          isActive={true}
-                          manualScrollNonce={manualScrollNonce}
-                          seekTo={seekTo}
-                          jumpToSentence={jumpToSentence}
-                          toggleLoop={toggleLoop}
-                          onPrev={() => handlePrev(currentSentenceIdx)}
-                          onNext={() => handleNext(currentSentenceIdx)}
-                          isLooping={true}
-                          isGlobalLooping={isGlobalLoopActive}
-                          showAnalysis={showAnalysis}
-                          showTranslations={showTranslations}
-                          toggleGlobalAnalysis={() => setShowAnalysis(!showAnalysis)}
-                        />
-                      )}
-
                       {transcriptData.map((item, idx) => {
                         const isActive = idx === currentSentenceIdx;
                         // COMPOSITE KEY: Prevents React from skipping repeated lyrics by using FileID + Index + Time
