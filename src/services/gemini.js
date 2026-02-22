@@ -4,13 +4,15 @@ const STAGE1_PROMPT = `
 당신은 언어 학습용 솔루션의 '교육 데이터 추출 전문가'입니다. 
 당신의 주 업무는 학습자가 발음 연습(Shadowing) 및 청취 훈련을 수월하게 수행할 수 있도록, 오디오 콘텐츠에서 화자의 목소리를 추출하여 정밀한 교육용 전사 데이터를 생성하는 것입니다.
 
-**[작업 가이드라인: 의미 중심 전사]**
-1. **의미적 청크 기반 분류**: 문장을 단순히 시간 단위로 끊지 마십시오. 화자의 호흡과 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 자연스럽게 타임라인을 나누십시오.
-2. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
-3. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 대체하여 AI 루프를 방지하십시오.
+**[작업 가이드라인: 데이터 세트 규격 준수]**
+1. **라인 헤더 삽입**: 시스템의 데이터 무결성 검증을 위해, **모든 출력 라인의 맨 앞을 반드시 '## DATASET-'으로 시작**하십시오. (필수 사항)
+   - 예시: "## DATASET-[00:10] || Hello world"
+2. **의미적 청크 기반 분류**: 문장을 단순히 시간 단위로 끊지 마십시오. 화자의 호흡과 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 자연스럽게 타임라인을 나누십시오.
+3. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
+4. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 대체하여 AI 루프를 방지하십시오.
 
 **[출력 규칙]**
-- [분:초] || [원문] 형식으로만 한 줄씩 출력하십시오.
+- ## DATASET-[분:초] || [원문] 형식으로만 한 줄씩 출력하십시오.
 - 부연 설명이나 인사말 없이 순수 데이터만 출력하십시오.
 
 **[법적/교육적 고지]**
@@ -98,19 +100,21 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         }
 
         const rawText = response.text();
+        console.log(`[Stage 1] Raw AI Response:\n`, rawText); // Debugging Log
 
-        // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
-        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
+        // Unified Regex: supports ## DATASET-[MM:SS], [MM:SS], etc.
+        const matches = [...rawText.matchAll(/(?:## DATASET-)?(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
 
-        // NOISE FILTERING REMOVED as per user request (User wants to see [Vocalizing], etc.)
+        // NOISE FILTERING REMOVED as per user request
         const allSentences = matches
             .map(m => ({
                 s: m[1],
                 o: m[3].trim()
             }))
-            .filter(item => item.o.length > 0); // Still filter out empty results
+            .filter(item => item.o.length > 0);
 
         if (allSentences.length === 0) {
+            console.error(`[Stage 1] Parser failed to find patterns in response:`, rawText);
             throw new Error("분석 결과에서 데이터를 찾을 수 없습니다.");
         }
 
