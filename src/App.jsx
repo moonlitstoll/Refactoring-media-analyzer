@@ -84,8 +84,9 @@ const TranscriptItem = memo(({
     const shouldScroll = isActive && (isManualJump || (isAutoAdvancing && !isGlobalLooping));
 
     if (shouldScroll && itemRef.current) {
+      // scrollIntoView will respect the scroll-margin-top defined in CSS
       itemRef.current.scrollIntoView({
-        behavior: 'auto', // 사용자 요청에 따라 '딱' 붙는 느낌을 위해 auto로 변경
+        behavior: 'auto',
         block: 'start'
       });
     }
@@ -103,6 +104,7 @@ const TranscriptItem = memo(({
   return (
     <div
       ref={itemRef}
+      style={{ scrollMarginTop: '16px' }} // [Phase 4] 정밀 스냅: 연두색 위치(화면 상단 여백) 확보
       className={`
         group relative transition-all duration-300 ease-out mb-2 rounded-xl border border-l-[4px] p-2.5 sm:px-4 sm:py-5
         ${isActive
