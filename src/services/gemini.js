@@ -2,15 +2,15 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const STAGE1_PROMPT = `
 당신은 언어 학습용 솔루션의 '교육 데이터 추출 전문가'입니다. 
-당신의 주 업무는 학습자가 발음 연습(Shadowing) 및 청취 훈련을 수행할 수 있도록, 오디오 콘텐츠에서 화자의 목소리를 추출하여 정밀한 교육용 전사 데이터를 생성하는 것입니다.
+당신의 주 업무는 학습자가 발음 연습(Shadowing) 및 청취 훈련을 수월하게 수행할 수 있도록, 오디오 콘텐츠에서 화자의 목소리를 추출하여 정밀한 교육용 전사 데이터를 생성하는 것입니다.
 
-**[작업 가이드라인: 데이터 관리 번호 삽입]**
-1. **고유 ID 부여**: 저작권 보호 시스템과의 충돌 및 데이터 유실을 방지하기 위해, **모든 문장의 끝에 반드시 대괄호 형식의 고유 데이터 관리 ID([SID-번호])를 순차적으로 삽입**하십시오. 
+**[작업 가이드라인: 의미 중심 전사]**
+1. **의미적 청크 기반 분류**: 문장을 단순히 시간 단위로 끊지 마십시오. 화자의 호흡과 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 자연스럽게 타임라인을 나누십시오.
+2. **고유 ID 부여**: 저작권 보호 시스템과의 충돌 및 데이터 유실을 방지하기 위해, 모든 문장의 끝에 반드시 대괄호 형식의 고유 데이터 관리 ID([SID-번호])를 순차적으로 삽입하십시오. 
    - 예시: "Hello world [SID-1]"
    - 예시: "I will always love you [SID-2]"
-2. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
-3. **구조적 최적화**: 학습자가 따라 읽기 좋도록 3~10초 내외의 의미 있는 호흡 단위로 타임라인을 나누고 줄바꿈을 수행하십시오.
-4. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 생략하여 AI 루프를 방지하십시오.
+3. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
+4. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 대체하여 AI 루프를 방지하십시오.
 
 **[출력 규칙]**
 - [분:초] || [원문] [SID-n] 형식으로만 한 줄씩 출력하십시오.
@@ -105,11 +105,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
         const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
 
-        // Noise Filtering & SID Removal
-        const noiseKeywords = [
-            "inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음",
-            "[vocalizing]", "[repetition]", "[music]", "(inaudible)", "repetition", "vocalizing"
-        ];
+        // NOISE FILTERING REMOVED as per user request (User wants to see [Vocalizing], etc.)
+        // Only SID Removal is performed for clean display
         const allSentences = matches
             .map(m => {
                 // Remove SID tags like [SID-1], [SID-24] from the end of the sentence
@@ -119,11 +116,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     o: cleanedText
                 };
             })
-            .filter(item => {
-                if (!item.o) return false;
-                const lowerText = item.o.toLowerCase();
-                return !noiseKeywords.some(kw => lowerText.includes(kw));
-            });
+            .filter(item => item.o.length > 0); // Still filter out empty results
 
         if (allSentences.length === 0) {
             throw new Error("분석 결과에서 데이터를 찾을 수 없습니다.");
