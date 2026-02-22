@@ -49,46 +49,6 @@ const getModels = (modelId) => {
     return [modelId].filter(m => validModels.includes(m));
 };
 
-async function uploadToGemini(file, apiKey) {
-    console.log(`[File API] Uploading ${file.name} for global timeline analysis...`);
-    const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
-
-    const response = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-            "X-Goog-Upload-Protocol": "resumable",
-            "X-Goog-Upload-Command": "start",
-            "X-Goog-Upload-Header-Content-Length": file.size,
-            "X-Goog-Upload-Header-Content-Type": file.type || "video/mp4",
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ file: { display_name: file.name } }),
-    });
-
-    const uploadLocation = response.headers.get("X-Goog-Upload-URL");
-    if (!uploadLocation) throw new Error("Failed to get upload URL");
-
-    const uploadResponse = await fetch(uploadLocation, {
-        method: "POST",
-        headers: {
-            "X-Goog-Upload-Offset": 0,
-            "X-Goog-Upload-Command": "upload, finalize",
-        },
-        body: file,
-    });
-
-    const fileInfo = await uploadResponse.json();
-    const fileName = fileInfo.file.name;
-    const fileUri = fileInfo.file.uri;
-
-    while (true) {
-        const statusResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${apiKey}`);
-        const statusInfo = await statusResponse.json();
-        if (statusInfo.state === "ACTIVE") return fileUri;
-        if (statusInfo.state === "FAILED") throw new Error("File processing failed");
-        await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-}
 
 async function fileToGenerativePart(file) {
     return new Promise((resolve, reject) => {
@@ -122,21 +82,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName}`);
 
     try {
-        // [수정] 사용자의 요청에 따라 10분(600초) 이하 파일은 업로드 없이 inlineData 방식으로 처리 (RECITATION 오류 회피용)
-        let mediaData;
-        if (totalDuration > 0 && totalDuration <= 600) {
-            console.log(`[Stage 1] Short media (${totalDuration}s <= 600s). Using inlineData for stability.`);
-            mediaData = await fileToGenerativePart(file);
-        } else {
-            console.log(`[Stage 1] Long media or unknown duration. Using File API upload.`);
-            const fileUri = await uploadToGemini(file, apiKey);
-            mediaData = {
-                fileData: {
-                    mimeType: file.type || "video/mp4",
-                    fileUri: fileUri
-                }
-            };
-        }
+        // [수정] 모든 파일을 업로드 없이 inlineData 방식으로 처리 (가장 안정적이었던 초기 방식으로 원복)
+        console.log(`[Stage 1] Using inlineData for transcription.`);
+        const mediaData = await fileToGenerativePart(file);
 
         const model = genAI.getGenerativeModel({
             model: modelName,
