@@ -37,45 +37,20 @@ const getModels = (modelId) => {
     return [modelId].filter(m => validModels.includes(m));
 };
 
-async function uploadToGemini(file, apiKey) {
-    console.log(`[File API] Uploading ${file.name}...`);
-    const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
-
-    const response = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-            "X-Goog-Upload-Protocol": "resumable",
-            "X-Goog-Upload-Command": "start",
-            "X-Goog-Upload-Header-Content-Length": file.size,
-            "X-Goog-Upload-Header-Content-Type": file.type || "video/mp4",
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ file: { display_name: file.name } }),
+async function fileToGenerativePart(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            resolve({
+                inlineData: {
+                    data: reader.result.split(',')[1],
+                    mimeType: file.type || "video/mp4"
+                }
+            });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
     });
-
-    const uploadLocation = response.headers.get("X-Goog-Upload-URL");
-    if (!uploadLocation) throw new Error("Failed to get upload URL");
-
-    const uploadResponse = await fetch(uploadLocation, {
-        method: "POST",
-        headers: {
-            "X-Goog-Upload-Offset": 0,
-            "X-Goog-Upload-Command": "upload, finalize",
-        },
-        body: file,
-    });
-
-    const fileInfo = await uploadResponse.json();
-    const fileName = fileInfo.file.name;
-    const fileUri = fileInfo.file.uri;
-
-    while (true) {
-        const statusResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${apiKey}`);
-        const statusInfo = await statusResponse.json();
-        if (statusInfo.state === "ACTIVE") return fileUri;
-        if (statusInfo.state === "FAILED") throw new Error("File processing failed");
-        await new Promise(resolve => setTimeout(resolve, 3000));
-    }
 }
 
 const safetySettings = [
@@ -90,12 +65,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
-    console.log(`[Stage 1] Single Full Analysis with model: ${modelName}`);
+    console.log(`[Stage 1] Single Full Analysis (Base64) with model: ${modelName}`);
 
     try {
-        // 1. Upload file via File API (Better for large files > 20MB)
-        const fileUri = await uploadToGemini(file, apiKey);
-
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
@@ -105,14 +77,11 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             safetySettings
         }, { apiVersion: "v1beta" });
 
-        // 2. Single Analysis Call
+        const mediaPart = await fileToGenerativePart(file);
+
+        // Single Analysis Call with Inline Data
         const result = await model.generateContent([
-            {
-                fileData: {
-                    mimeType: file.type || "video/mp4",
-                    fileUri: fileUri
-                }
-            },
+            mediaPart,
             `${STAGE1_PROMPT}\n\n**영상 전체를 처음부터 끝까지 분석하여 모든 발화를 누락 없이 추출하십시오.**`
         ]);
 
