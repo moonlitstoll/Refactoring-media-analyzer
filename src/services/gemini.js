@@ -121,8 +121,23 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName}`);
 
     try {
-        // 1. Upload via File API (Required for efficient multi-segment querying)
-        const fileUri = await uploadToGemini(file, apiKey);
+        let mediaData;
+        const UPLOAD_THRESHOLD = 600; // 10 minutes
+
+        if (totalDuration >= UPLOAD_THRESHOLD) {
+            // 1. Upload via File API (Required for efficient multi-segment querying of long files)
+            const fileUri = await uploadToGemini(file, apiKey);
+            mediaData = {
+                fileData: {
+                    mimeType: file.type || "video/mp4",
+                    fileUri: fileUri
+                }
+            };
+        } else {
+            // 2. Use Inline Data (Faster for short files, no server upload needed)
+            console.log(`[Stage 1] Short media detected (${totalDuration}s). Using inlineData.`);
+            mediaData = await fileToGenerativePart(file);
+        }
 
         const model = genAI.getGenerativeModel({
             model: modelName,
@@ -147,12 +162,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             console.log(`[Stage 1] Analyzing segment: ${startMin}:${startSec} ~ ${endMin}:${endSec}`);
 
             const result = await model.generateContent([
-                {
-                    fileData: {
-                        mimeType: file.type || "video/mp4",
-                        fileUri: fileUri
-                    }
-                },
+                mediaData,
                 `${STAGE1_PROMPT}\n\n**현재 분석 구간: [${startMin}:${startSec} ~ ${endMin}:${endSec}]**\n위 범위 내의 발화만 절대 시간을 기준으로 전사하십시오.`
             ]);
 
