@@ -111,13 +111,17 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
 
         // Noise Filtering
-        const noiseKeywords = ["inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음"];
+        const noiseKeywords = [
+            "inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음",
+            "[vocalizing]", "[repetition]", "[music]", "(inaudible)", "repetition", "vocalizing"
+        ];
         const allSentences = matches
             .map(m => ({
                 s: m[1],
                 o: m[3].trim()
             }))
             .filter(item => {
+                if (!item.o) return false;
                 const lowerText = item.o.toLowerCase();
                 return !noiseKeywords.some(kw => lowerText.includes(kw));
             });

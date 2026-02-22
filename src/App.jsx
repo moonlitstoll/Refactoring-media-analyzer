@@ -349,11 +349,6 @@ const App = () => {
           endSeconds = endValue;
         }
 
-        // DEDUPLICATION & ANTI-GHOSTING: Never drop items. If text is empty, provide a mandatory placeholder.
-        if (!text || text.trim() === "" || text === "(No text)") {
-          text = "(가사/대사 분석 불가 구간 - Inaudible)";
-        }
-
         return {
           s: timestamp,
           timestamp,
@@ -369,6 +364,7 @@ const App = () => {
           isAnalyzed: item.isAnalyzed || (words && words.length > 0)
         };
       })
+      .filter(item => item.text && item.text.trim() !== "" && !item.text.includes('(Inaudible)') && !item.text.includes('(가사/대사 분석 불가 구간)'))
       .sort((a, b) => a.startSeconds - b.startSeconds);
   };
 
