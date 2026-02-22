@@ -78,6 +78,13 @@ async function uploadToGemini(file, apiKey) {
     }
 }
 
+const safetySettings = [
+    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+];
+
 export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash") {
     if (!apiKey) throw new Error("API Key is required");
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -94,7 +101,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             generationConfig: {
                 maxOutputTokens: 8192,
                 temperature: 0.1
-            }
+            },
+            safetySettings
         }, { apiVersion: "v1beta" });
 
         // 2. Single Analysis Call
@@ -136,7 +144,8 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: getModels(modelId)[0] || "gemini-2.0-flash",
-        generationConfig: { responseMimeType: "application/json" }
+        generationConfig: { responseMimeType: "application/json" },
+        safetySettings
     }, { apiVersion: "v1beta" });
 
     try {
