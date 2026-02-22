@@ -6,14 +6,11 @@ const STAGE1_PROMPT = `
 
 **[작업 가이드라인: 의미 중심 전사]**
 1. **의미적 청크 기반 분류**: 문장을 단순히 시간 단위로 끊지 마십시오. 화자의 호흡과 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 자연스럽게 타임라인을 나누십시오.
-2. **고유 ID 부여**: 저작권 보호 시스템과의 충돌 및 데이터 유실을 방지하기 위해, 모든 문장의 끝에 반드시 대괄호 형식의 고유 데이터 관리 ID([SID-번호])를 순차적으로 삽입하십시오. 
-   - 예시: "Hello world [SID-1]"
-   - 예시: "I will always love you [SID-2]"
-3. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
-4. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 대체하여 AI 루프를 방지하십시오.
+2. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
+3. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 대체하여 AI 루프를 방지하십시오.
 
 **[출력 규칙]**
-- [분:초] || [원문] [SID-n] 형식으로만 한 줄씩 출력하십시오.
+- [분:초] || [원문] 형식으로만 한 줄씩 출력하십시오.
 - 부연 설명이나 인사말 없이 순수 데이터만 출력하십시오.
 
 **[법적/교육적 고지]**
@@ -106,16 +103,11 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
 
         // NOISE FILTERING REMOVED as per user request (User wants to see [Vocalizing], etc.)
-        // Only SID Removal is performed for clean display
         const allSentences = matches
-            .map(m => {
-                // Remove SID tags like [SID-1], [SID-24] from the end of the sentence
-                const cleanedText = m[3].replace(/\s*\[SID-\d+\]/g, '').trim();
-                return {
-                    s: m[1],
-                    o: cleanedText
-                };
-            })
+            .map(m => ({
+                s: m[1],
+                o: m[3].trim()
+            }))
             .filter(item => item.o.length > 0); // Still filter out empty results
 
         if (allSentences.length === 0) {
