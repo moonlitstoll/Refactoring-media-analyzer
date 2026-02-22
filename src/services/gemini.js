@@ -30,7 +30,7 @@ const STAGE2_PROMPT = `
 `;
 
 const getModels = (modelId) => {
-    const validModels = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
+    const validModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
     return [modelId].filter(m => validModels.includes(m));
 };
 
