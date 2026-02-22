@@ -10,6 +10,19 @@ import {
 import { extractTranscript, analyzeSentences } from './services/gemini';
 import { mediaStore } from './utils/MediaStore';
 
+// Helper: Get Media Duration
+const getMediaDuration = (file) => {
+  return new Promise((resolve) => {
+    const media = document.createElement(file.type.startsWith('video') ? 'video' : 'audio');
+    media.preload = 'metadata';
+    media.onloadedmetadata = () => {
+      window.URL.revokeObjectURL(media.src);
+      resolve(media.duration);
+    };
+    media.src = URL.createObjectURL(file);
+  });
+};
+
 // Error Boundary Component
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -766,8 +779,15 @@ const App = () => {
 
           let rawData;
           try {
-            // STEP 1: Fast Extraction (Stage 1)
-            rawData = await extractTranscript(fItem.file, apiKey, selectedModel);
+            // Get actual duration for segmented analysis
+            const duration = await getMediaDuration(fItem.file);
+            console.log(`[Stage 1] Real duration for ${fItem.file.name}: ${duration}s`);
+
+            // STEP 1: Fast Extraction (Stage 1) - Now with Sequential Chunks
+            rawData = await extractTranscript(fItem.file, apiKey, selectedModel, duration, (incrementalData) => {
+              // Real-time UI update
+              setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, data: incrementalData } : p));
+            });
           } catch (apiError) {
             throw new Error(`API Error (Stage 1): ${apiError.message}`);
           }
