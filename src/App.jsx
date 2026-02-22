@@ -604,8 +604,9 @@ const App = () => {
           const item = data[targetIdx];
           const start = Math.max(0, item.seconds - 1.0);
           const nextItem = data[targetIdx + 1];
+          // [Phase 4] 조기 종료 버그 수정: 5초 제한을 제거하고 실제 다음 문장 시작 전(+1초 버퍼)까지 재생
           const end = nextItem
-            ? Math.min(nextItem.seconds, item.seconds + 5.0) + 1.0
+            ? nextItem.seconds + 1.0
             : (v.duration ? v.duration + 1.0 : 999999);
 
           // [Phase 4] 수동 시크(Seek) 대응: 사용자가 루프 범위 밖으로 강제 이동했다면 루프 타겟 재설정
