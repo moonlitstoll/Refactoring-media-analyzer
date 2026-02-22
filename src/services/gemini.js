@@ -14,6 +14,7 @@ const STAGE1_PROMPT = `
 
 **[주의 사항]**
 - 부연 설명, 인사말, 또는 분석 결과를 알리는 텍스트를 절대 포함하지 마십시오.
+- **분석 불가 구간(Inaudible, 불분명함 등)에 대한 안내 문구를 절대 작성하지 마십시오.** 들리지 않는 구간은 아예 기록에서 제외하십시오.
 - 오직 위 형식의 데이터 스트림만 출력하십시오.
 - 외국어 원문 그대로를 작성하십시오. (번역 금지)
 `;
@@ -92,10 +93,18 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
         // Standard Format: [MM:SS] || Text
         const matches = [...rawText.matchAll(/\[(\d{1,2}:?(\d{1,2}:?)?\d{1,2})\]\s*\|\|\s*(.*)/g)];
-        const totalSentences = matches.map(m => ({
-            s: m[1],
-            o: m[3].trim()
-        }));
+
+        // Noise Filtering: Remove AI commentary like "Inaudible", "Music", etc.
+        const noiseKeywords = ["inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음"];
+        const totalSentences = matches
+            .map(m => ({
+                s: m[1],
+                o: m[3].trim()
+            }))
+            .filter(item => {
+                const lowerText = item.o.toLowerCase();
+                return !noiseKeywords.some(kw => lowerText.includes(kw));
+            });
 
         if (totalSentences.length === 0) {
             console.error("[Stage 1] Raw text preview:", rawText.substring(0, 500));
