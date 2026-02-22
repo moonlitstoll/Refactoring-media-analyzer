@@ -3,18 +3,19 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const STAGE1_PROMPT = `
 당신은 오디오/비디오의 모든 발화를 하나도 빠짐없이 '시간과 원문'으로 기록하는 완벽한 속기사입니다.
 
-**[핵심 작업 지침]**
-1. **전수 기록**: 영상의 00:00초부터 마지막 종료 시점까지 단 한 문장도 누락하지 말고 모두 기록하십시오.
-2. **타임라인 기록**: 각 발화가 시작되는 시점을 MM:SS 형식으로 기록하십시오.
-3. **중단 없는 분석**: 중간에 요약하거나 생략하지 말고, 들리는 모든 내용을 순차적으로 끝까지 작성하십시오.
+**[필수 지침: 절대 시간 기반 전사]**
+1. **타임라인 고정**: 너는 제공된 미디어의 **절대 타임라인(00:00부터 시작)**을 완벽히 인지하고 있다.
+2. **구간 한정 출력**: 사용자가 요청한 [시작 시간 ~ 종료 시간] 범위 내에 해당하는 음성만 전사하라.
+3. **글로벌 타임스태프**: 전사 결과의 타임라인은 반드시 영상의 시작점(00:00)부터 계산된 누적 시간을 사용하라. 요청 구간의 시작을 00:00으로 잡는 실수를 절대 하지 마라.
+4. **출력 형식 (No JSON)**: 오직 아래 형식으로만 한 줄씩 출력하라.
 
 **[데이터 출력 형식]**
-MM:SS || 원문
-예: 00:12 || Xin chào mọi người.
+[분:초] || [원문]
+예: [08:15] || Xin chào mọi người.
 
 **[주의 사항]**
 - 부연 설명, 인사말, 또는 분석 결과를 알리는 텍스트를 절대 포함하지 마십시오.
-- **분석 불가 구간(Inaudible, 불분명함 등)에 대한 안내 문구를 절대 작성하지 마십시오.** 들리지 않는 구간은 아예 기록에서 제외하십시오.
+- 분석 불가 구간(Inaudible, 불분명함 등)에 대한 안내 문구를 절대 작성하지 마십시오.
 - 오직 위 형식의 데이터 스트림만 출력하십시오.
 - 외국어 원문 그대로를 작성하십시오. (번역 금지)
 `;
@@ -41,6 +42,47 @@ const getModels = (modelId) => {
     return [modelId].filter(m => validModels.includes(m));
 };
 
+async function uploadToGemini(file, apiKey) {
+    console.log(`[File API] Uploading ${file.name} for global timeline analysis...`);
+    const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
+
+    const response = await fetch(uploadUrl, {
+        method: "POST",
+        headers: {
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": file.size,
+            "X-Goog-Upload-Header-Content-Type": file.type || "video/mp4",
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ file: { display_name: file.name } }),
+    });
+
+    const uploadLocation = response.headers.get("X-Goog-Upload-URL");
+    if (!uploadLocation) throw new Error("Failed to get upload URL");
+
+    const uploadResponse = await fetch(uploadLocation, {
+        method: "POST",
+        headers: {
+            "X-Goog-Upload-Offset": 0,
+            "X-Goog-Upload-Command": "upload, finalize",
+        },
+        body: file,
+    });
+
+    const fileInfo = await uploadResponse.json();
+    const fileName = fileInfo.file.name;
+    const fileUri = fileInfo.file.uri;
+
+    while (true) {
+        const statusResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${apiKey}`);
+        const statusInfo = await statusResponse.json();
+        if (statusInfo.state === "ACTIVE") return fileUri;
+        if (statusInfo.state === "FAILED") throw new Error("File processing failed");
+        await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+}
+
 async function fileToGenerativePart(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -64,14 +106,17 @@ const safetySettings = [
     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
 ];
 
-export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash") {
+export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash", totalDuration = 0, onProgress = null) {
     if (!apiKey) throw new Error("API Key is required");
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
-    console.log(`[Stage 1] Single Full Analysis (Base64) with model: ${modelName}`);
+    console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName}`);
 
     try {
+        // 1. Upload via File API (Required for efficient multi-segment querying)
+        const fileUri = await uploadToGemini(file, apiKey);
+
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
@@ -80,42 +125,66 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             safetySettings
         }, { apiVersion: "v1beta" });
 
-        const mediaPart = await fileToGenerativePart(file);
+        let currentStart = 0;
+        const CHUNK_SIZE = 420; // 7 minutes
+        let allSentences = [];
+        const effectiveDuration = totalDuration || 3600; // Default to 1 hour if unknown
 
-        // Single Analysis Call with Inline Data
-        const result = await model.generateContent([
-            mediaPart,
-            `${STAGE1_PROMPT}\n\n**영상 전체를 처음부터 끝까지 분석하여 모든 발화를 누락 없이 추출하십시오.**`
-        ]);
+        while (currentStart < effectiveDuration) {
+            const currentEnd = Math.min(currentStart + CHUNK_SIZE, effectiveDuration);
+            const startMin = Math.floor(currentStart / 60);
+            const startSec = Math.floor(currentStart % 60);
+            const endMin = Math.floor(currentEnd / 60);
+            const endSec = Math.floor(currentEnd % 60);
 
-        const response = await result.response;
-        const rawText = response.text();
+            console.log(`[Stage 1] Analyzing segment: ${startMin}:${startSec} ~ ${endMin}:${endSec}`);
 
-        // Standard Delimiter Format: MM:SS || Text (Brackets optional for robustness)
-        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
+            const result = await model.generateContent([
+                {
+                    fileData: {
+                        mimeType: file.type || "video/mp4",
+                        fileUri: fileUri
+                    }
+                },
+                `${STAGE1_PROMPT}\n\n**현재 분석 구간: [${startMin}:${startSec} ~ ${endMin}:${endSec}]**\n위 범위 내의 발화만 절대 시간을 기준으로 전사하십시오.`
+            ]);
 
-        // Noise Filtering: Remove AI commentary like "Inaudible", "Music", etc.
-        const noiseKeywords = ["inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음"];
-        const totalSentences = matches
-            .map(m => ({
-                s: m[1],
-                o: m[3].trim()
-            }))
-            .filter(item => {
-                const lowerText = item.o.toLowerCase();
-                return !noiseKeywords.some(kw => lowerText.includes(kw));
-            });
+            const response = await result.response;
+            const rawText = response.text();
 
-        if (totalSentences.length === 0) {
-            console.error("[Stage 1] Raw text preview:", rawText.substring(0, 500));
+            // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
+            const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
+
+            // Noise Filtering
+            const noiseKeywords = ["inaudible", "분석 불가", "들리지 않음", "music", "background", "배경음"];
+            const segmentSentences = matches
+                .map(m => ({
+                    s: m[1],
+                    o: m[3].trim()
+                }))
+                .filter(item => {
+                    const lowerText = item.o.toLowerCase();
+                    return !noiseKeywords.some(kw => lowerText.includes(kw));
+                });
+
+            allSentences = [...allSentences, ...segmentSentences];
+
+            // Progress update for real-time UI
+            if (onProgress) {
+                onProgress(normalizeTimestamps(allSentences));
+            }
+
+            if (currentEnd >= effectiveDuration || (totalDuration === 0 && segmentSentences.length === 0)) break;
+            currentStart += CHUNK_SIZE;
+        }
+
+        if (allSentences.length === 0) {
             throw new Error("분석 결과에서 데이터를 찾을 수 없습니다.");
         }
 
-        console.log(`[Stage 1] Successfully extracted ${totalSentences.length} sentences.`);
-
-        return normalizeTimestamps(totalSentences);
+        return normalizeTimestamps(allSentences);
     } catch (err) {
-        console.error(`Stage 1 Single Call Error:`, err);
+        console.error(`Stage 1 Global Timeline Error:`, err);
         throw err;
     }
 }
