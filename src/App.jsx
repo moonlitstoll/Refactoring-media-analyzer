@@ -187,11 +187,14 @@ const TranscriptItem = memo(({
               </div>
               <div className="p-3 bg-white border border-emerald-100 rounded-xl">
                 <p className="text-slate-800 text-[15px] sm:text-[16px] leading-[1.6] whitespace-pre-line font-medium">
-                  {item.analysis.split(/(\*\*.*?\*\*)/).map((part, i) =>
-                    part.startsWith('**') && part.endsWith('**')
-                      ? <strong key={i} className="text-emerald-800 font-extrabold">{part.slice(2, -2)}</strong>
-                      : part
-                  )}
+                  {typeof item.analysis === 'string'
+                    ? item.analysis.split(/(\*\*.*?\*\*)/).map((part, i) =>
+                      part.startsWith('**') && part.endsWith('**')
+                        ? <strong key={i} className="text-emerald-800 font-extrabold">{part.slice(2, -2)}</strong>
+                        : part
+                    )
+                    : null
+                  }
                 </p>
               </div>
             </div>
