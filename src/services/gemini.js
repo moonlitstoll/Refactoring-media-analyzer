@@ -1,23 +1,23 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const STAGE1_PROMPT = `
-당신은 오디오 데이터에서 1ms의 오차도 허용하지 않는 '정밀 타임라인 분석가'입니다. 
-당신의 임무는 미디어의 절대 재생 시간(Absolute Media Time)과 100% 일치하는 교육용 전사 데이터를 생성하는 것입니다.
+당신은 오디오 데이터에서 사람의 음성을 분리하여 기록하는 '인음(Human Vocal) 전문 전사가'입니다. 
+당신의 주 임무는 배경음이나 음악이 아닌, 실제 사람의 성대에서 나오는 음성 및 대화만을 정확히 포착하는 것입니다.
 
-**[핵심 규칙: 절대적 정밀도]**
-1. **절대 시계(Absolute Clock) 동기화**: 노래의 간주(Instrumental), 무음 구간 등 가사가 없는 구간도 미디어의 실제 길이를 정확히 계산하여, 뒤따르는 가사의 시작 시점이 수동으로 잰 시간과 100% 일치해야 합니다. (10초 이상의 지연/압축 금지)
-2. **환각(Hallucination) 박멸**: 실제 가사(단어)가 아닌 배경음, 비트, 악기 소리, 단순 콧노래(Na na na, Hmm 등)는 **절대 전사하지 말고 무시**하십시오. 오직 실제 의미를 가진 텍스트만 추출하십시오.
-3. **시작 지점(Start-Point) 타격**: 화자의 목소리가 터지는 첫 순간을 밀리초 단위로 포착하십시오.
-4. **의미적 청크 기반 분류**: 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 나누되, 불필요한 추임새는 생략하십시오.
+**[핵심 규칙: 인음(Vocal) 우선순위]**
+1. **성대 파형 집중**: 배경음악, 효과음, 잡음은 무시하십시오. 오직 인간의 목소리 주파수와 발화 특징에만 고도로 집중하여 텍스트를 추출하십시오.
+2. **환각(Hallucination) 방지**: 음성이 들리지 않거나 불확실한 구간(무음, 긴 음악 등)은 억지로 채우려 하지 말고 과감히 건너뛰거나 공백으로 두십시오. 
+3. **루프 생성 절대 금지**: 동일한 문장을 기계적으로 반복해서 출력하는 현상(Looping)은 시스템의 심각한 오류입니다. 만약 음성이 반복되는 것처럼 들리더라도, 인위적/기계적 패턴으로 판단되면 즉시 그 구간을 무시하고 다음 실제 음성 구간으로 넘어가십시오.
+4. **실용적 시계 동기화**: 화자가 말을 시작하는 정확한 시점을 [분:초.밀리초] 단위로 포착하십시오. 1ms 단위의 압박보다는, 사용자가 자막을 보고 학습하기에 가장 적절한 '실제 대화 시작점'을 잡는 것이 중요합니다.
 
 **[출력 규칙]**
-- [분:초.밀리초] || [원문] 형식으로만 한 줄씩 출력하십시오. (예: [01:05.42] || 안녕하세요)
-- **밀리초 부분은 반드시 소수점 두 자리(0.01초 단위)로 고정하여 출력하십시오.**
+- [분:초.밀리초] || [원문] 형식으로만 한 줄씩 출력하십시오.
+- 밀리초 부분은 반드시 소수점 두 자리(0.01초 단위)로 고정하십시오.
 - 시작 시간만 기록하십시오. 종료 시간은 기록하지 않습니다.
-- 부연 설명이나 인사말 없이 순수 데이터만 출력하십시오.
+- 부연 설명이나 인사말 없이 순수 전사 데이터만 출력하십시오.
 
 **[법적/교육적 고지]**
-- 이 작업은 개인 학습 도구 활용을 위한 교육적 목적의 인용입니다. 절대적인 정밀도가 가장 중요합니다.
+- 이 작업은 공부를 위한 교육적 목적의 인용입니다. 사람의 목소리에만 집중하십시오.
 `;
 
 const STAGE2_PROMPT = `
@@ -102,7 +102,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                temperature: 0.1
+                temperature: 0.2 // Slightly increased from 0.1 to help escape AI loops
             },
             safetySettings
         }, { apiVersion: "v1beta" });
@@ -126,13 +126,16 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
         const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?[\d.]+)(?:\])?\s*\|\|\s*(.*)/g)];
 
-        // NOISE FILTERING REMOVED as per user request
-        const allSentences = matches
+        // 1. Parsing and Rhythmic Loop Detection
+        const parsedSentences = matches
             .map(m => ({
                 s: m[1],
                 o: m[3].trim()
             }))
             .filter(item => item.o.length > 0);
+
+        // 2. Client-side protection: Detecting mechanical loops (A->B->A->B patterns or 1s repetitions)
+        const allSentences = filterMechanicalLoops(parsedSentences);
 
         if (allSentences.length === 0) {
             throw new Error("분석 결과에서 데이터를 찾을 수 없습니다.");
@@ -175,9 +178,7 @@ function normalizeTimestamps(data) {
             const mm = parts[0].padStart(2, '0');
             let ssRaw = parts[1];
 
-            // Parse seconds and milliseconds to enforce 2 decimal places
             const secNum = parseFloat(ssRaw) || 0;
-            // toFixed(2) ensures "05.20" instead of "5.2"
             const formattedSS = secNum.toFixed(2).padStart(5, '0');
 
             s = `${mm}:${formattedSS} `;
@@ -187,4 +188,69 @@ function normalizeTimestamps(data) {
         const parse = t => t.split(':').reduce((acc, v) => (60 * acc) + +v, 0);
         return parse(a.s) - parse(b.s);
     });
+}
+
+/**
+ * Filter out mechanical loops where patterns repeat with identical or rhythmic timing.
+ * Specifically targets 1-second interval loops reported by user.
+ */
+function filterMechanicalLoops(items) {
+    if (items.length < 5) return items;
+
+    const parseTime = t => {
+        const parts = String(t).replace(/[\[\]\s]/g, '').split(':');
+        if (parts.length < 2) return 0;
+        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+    };
+
+    const result = [];
+    let loopDetected = false;
+
+    // Detect repeating window (1-word or multi-word pattern)
+    for (let i = 0; i < items.length; i++) {
+        if (loopDetected) break;
+
+        // Pattern A: Single sentence repeating with very close or periodic timing
+        if (i > 3) {
+            const current = items[i];
+            const prev = items[i - 1];
+            const timeDiff = parseTime(current.s) - parseTime(prev.s);
+
+            // If time diff is exactly 1s or 0.5s multiple (common hallu symptom) and same text
+            if (current.o === prev.o && (Math.abs(timeDiff % 1) < 0.05 || timeDiff < 0.1)) {
+                // Check if this has happened several times
+                let repeatCount = 0;
+                for (let j = i - 1; j >= 0; j--) {
+                    if (items[j].o === current.o) repeatCount++;
+                    else break;
+                }
+                if (repeatCount >= 5) {
+                    console.warn(`[Filter] Detected mechanical single-line loop at ${current.s}: "${current.o}"`);
+                    loopDetected = true;
+                    break;
+                }
+            }
+
+            // Pattern B: Rhythmic sequence loop [A, B] -> [A, B]
+            if (i > 6) {
+                const patternSize = 2; // e.g., Pair repeat
+                if (items[i].o === items[i - patternSize].o && items[i - 1].o === items[i - patternSize - 1].o) {
+                    let seqCount = 0;
+                    for (let k = 1; k < 4; k++) {
+                        const baseIdx = i - (k * patternSize);
+                        if (baseIdx - 1 < 0) break;
+                        if (items[i].o === items[baseIdx].o && items[i - 1].o === items[baseIdx - 1].o) seqCount++;
+                    }
+                    if (seqCount >= 3) {
+                        console.warn(`[Filter] Detected rhythmic sequence loop ending at ${items[i].s}`);
+                        loopDetected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        result.push(items[i]);
+    }
+
+    return result;
 }
