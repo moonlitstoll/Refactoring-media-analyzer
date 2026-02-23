@@ -50,7 +50,7 @@ rồi: 이미 (시간의 경과를 나타냄)
 **chưa có được lại cảm giác sinh viên** (아직 학생의 감각을 다시 느껴보지 못했다)
 chưa: 아직 ~하지 않다
 ...
-\`;
+`;
 
 const getModels = (modelId) => {
     const validModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
@@ -87,7 +87,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
-    console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${ modelName } `);
+    console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName} `);
 
     try {
         console.log(`[Stage 1] Using inlineData for transcription.`);
@@ -151,7 +151,7 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
     try {
         const result = await model.generateContent([
             STAGE2_PROMPT,
-            `분석 대상: \n${ JSON.stringify(sentences.map((s, i) => [i, s.o])) } `
+            `분석 대상: \n${JSON.stringify(sentences.map((s, i) => [i, s.o]))} `
         ]);
         let text = await result.response.text();
         const start = text.indexOf('['), end = text.lastIndexOf(']');
@@ -174,7 +174,7 @@ function normalizeTimestamps(data) {
             // toFixed(2) ensures "05.20" instead of "5.2"
             const formattedSS = secNum.toFixed(2).padStart(5, '0');
 
-            s = `${ mm }:${ formattedSS } `;
+            s = `${mm}:${formattedSS} `;
         }
         return { ...item, s };
     }).sort((a, b) => {
