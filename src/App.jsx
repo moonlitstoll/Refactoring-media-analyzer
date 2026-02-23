@@ -244,7 +244,7 @@ const App = () => {
   const activeIdxRef = useRef(null);
   const isGlobalLoopActiveRef = useRef(isGlobalLoopActive);
   const loopTargetIdxRef = useRef(null); // [Phase 4] 루프 고정 타겟 인덱스
-  const lastActionTimeRef = useRef(0); // [4차 수정] 시간 기반 의도 보호 가드 (0.4초로 단축 예정)
+  const lastActionTimeRef = useRef(0); // [4차 수정] 시간 기반 의도 보호 가드
 
   // Derived active file
   const activeFile = files.find(f => f.id === activeFileId);
@@ -493,6 +493,7 @@ const App = () => {
     if (v) {
       triggerManualScroll();
 
+      // [4차 수정] Time-Based Intent Guard: 1초간 브라우저의 모든 정지 신호 차단
       lastActionTimeRef.current = Date.now();
       setIsPlaying(true); // 즉각 1번(||) 고정
 
@@ -588,7 +589,7 @@ const App = () => {
     v.loop = !isGlobalLoopActive;
 
     const runSync = () => {
-      if (!v || v.seeking) return; // [심층 수정] 탐색 중에는 엔진 개입 차단 (Seek Loop 방지)
+      if (!v) return;
       const now = v.currentTime;
       setCurrentTime(now);
 
@@ -625,7 +626,7 @@ const App = () => {
 
           // 1. 루프 범위 체크 및 되돌리기
           if (v.currentTime >= end - 0.1 || v.ended) {
-            // [4차 수정] 루프 재시작 시에도 400ms 가드 (반응성 개선)
+            // [4차 수정] 루프 재시작 시에도 1초간 철벽 가드
             lastActionTimeRef.current = Date.now();
             setIsPlaying(true);
 
@@ -1317,17 +1318,17 @@ const App = () => {
                         onClick={togglePlay}
                         onPlay={() => setIsPlaying(true)}
                         onPause={() => {
-                          // [4차 수정] 400ms 이내에 발생하는 '정지' 리포트는 브라우저 내부 소음으로 간주하고 무시
+                          // [4차 수정] 1초 이내에 발생하는 '정지' 리포트는 브라우저 내부 소음으로 간주하고 무시
                           const timeSinceAction = Date.now() - lastActionTimeRef.current;
-                          if (timeSinceAction > 400) {
+                          if (timeSinceAction > 1000) {
                             setIsPlaying(false);
                           }
                         }}
                         onEnded={() => setIsPlaying(false)}
                         onWaiting={() => {
-                          // 버퍼링 시에도 가드 적용 (400ms)
+                          // 버퍼링 시에도 1초 가드 적용
                           const timeSinceAction = Date.now() - lastActionTimeRef.current;
-                          if (timeSinceAction > 400) {
+                          if (timeSinceAction > 1000) {
                             setIsPlaying(false);
                           }
                         }}
