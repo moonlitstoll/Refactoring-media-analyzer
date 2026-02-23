@@ -179,21 +179,16 @@ const TranscriptItem = memo(({
 
           {/* Patterns Section Removed */}
 
-          {/* Word Analysis */}
-          {item.words && item.words.length > 0 && (
+          {/* Light JSON Analysis Content */}
+          {item.analysis && (
             <div>
               <div className="flex items-center gap-1.5 text-emerald-600 font-bold text-[11px] uppercase tracking-wider mb-1 px-1">
-                <BookOpen size={12} /> Word Analysis
+                <BookOpen size={12} /> Detailed Analysis
               </div>
-              <div className="divide-y divide-slate-100 border border-emerald-100/20 rounded-xl overflow-hidden bg-white">
-                {item.words.map((w, wi) => (
-                  <div key={wi} className="py-1 px-2 flex items-start gap-2 hover:bg-emerald-50/20 transition-colors">
-                    <span className="font-bold text-emerald-700 text-[16px] sm:text-[18px] w-[35%] shrink-0 break-words leading-tight pt-0.5">{w.word}</span>
-                    <div className="flex-1 min-w-0">
-                      <span className="block text-slate-800 text-[15px] sm:text-[16px] font-bold leading-[1.3]">{w.meaning}</span>
-                    </div>
-                  </div>
-                ))}
+              <div className="p-3 bg-white border border-emerald-100 rounded-xl">
+                <p className="text-slate-800 text-[15px] sm:text-[16px] leading-[1.6] whitespace-pre-line font-medium">
+                  {item.analysis}
+                </p>
               </div>
             </div>
           )}
@@ -365,10 +360,8 @@ const App = () => {
           o: text,
           text,
           translation,
-          patterns,
-          words: words,
-          // 판정 기준 강화: 상세 단어 분석(w/words)이 실질적으로 존재해야 완료된 것으로 간주
-          isAnalyzed: item.isAnalyzed || (words && words.length > 0)
+          analysis: item.a || item.analysis || "",
+          isAnalyzed: item.isAnalyzed || !!(item.a || item.analysis)
         };
       })
       .filter(item => item.text && item.text.trim() !== "" && !item.text.includes('(Inaudible)') && !item.text.includes('(가사/대사 분석 불가 구간)'))
@@ -895,7 +888,7 @@ const App = () => {
                   workingData[globalIdx] = {
                     ...workingData[globalIdx],
                     translation: translation || "",
-                    words: Array.isArray(wordsArr) ? wordsArr.map(([word, meaning]) => ({ word, meaning })) : [],
+                    analysis: res[2] || "", // New Light JSON string format
                     isAnalyzed: true
                   };
                 }
