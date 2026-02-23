@@ -244,6 +244,7 @@ const App = () => {
   const activeIdxRef = useRef(null);
   const isGlobalLoopActiveRef = useRef(isGlobalLoopActive);
   const loopTargetIdxRef = useRef(null); // [Phase 4] 루프 고정 타겟 인덱스
+  const lastActionTimeRef = useRef(0); // [4차 수정] 시간 기반 의도 보호 가드
 
   // Derived active file
   const activeFile = files.find(f => f.id === activeFileId);
@@ -490,30 +491,31 @@ const App = () => {
   const seekTo = useCallback((s) => {
     const v = videoRef.current;
     if (v) {
-      // Any direct seek is a manual intention to see that point
       triggerManualScroll();
 
-      // Ensure target time is within valid range
-      const targetTime = Math.max(0, Math.min(s, v.duration || 999999));
+      // [4차 수정] Time-Based Intent Guard: 1초간 브라우저의 모든 정지 신호 차단
+      lastActionTimeRef.current = Date.now();
+      setIsPlaying(true); // 즉각 1번(||) 고정
 
-      // Force seek
+      const targetTime = Math.max(0, Math.min(s, v.duration || 999999));
       v.currentTime = targetTime;
 
-      // If video is still in a state where it can't play, it might need a small kick
-      if (v.paused) {
-        v.play().catch(e => {
-          console.warn("Play interrupted or failed:", e);
-          // Retry playback on next frame if interrupted
-          requestAnimationFrame(() => v.play().catch(() => { }));
-        });
-      }
+      // 비동기 재생 명령
+      v.play().catch(() => { });
     }
   }, [triggerManualScroll]);
 
   const togglePlay = useCallback(() => {
     if (videoRef.current) {
-      if (videoRef.current.paused) videoRef.current.play();
-      else videoRef.current.pause();
+      lastActionTimeRef.current = Date.now(); // 수동 토글 시에도 시간 갱신
+
+      if (videoRef.current.paused) {
+        setIsPlaying(true);
+        videoRef.current.play().catch(() => { });
+      } else {
+        setIsPlaying(false);
+        videoRef.current.pause();
+      }
     }
   }, []);
 
@@ -624,6 +626,10 @@ const App = () => {
 
           // 1. 루프 범위 체크 및 되돌리기
           if (v.currentTime >= end - 0.1 || v.ended) {
+            // [4차 수정] 루프 재시작 시에도 1초간 철벽 가드
+            lastActionTimeRef.current = Date.now();
+            setIsPlaying(true);
+
             v.currentTime = start;
             v.play().catch(() => { });
             return;
@@ -1310,6 +1316,22 @@ const App = () => {
                         src={mediaUrl}
                         className="w-full h-full object-contain"
                         onClick={togglePlay}
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => {
+                          // [4차 수정] 1초 이내에 발생하는 '정지' 리포트는 브라우저 내부 소음으로 간주하고 무시
+                          const timeSinceAction = Date.now() - lastActionTimeRef.current;
+                          if (timeSinceAction > 1000) {
+                            setIsPlaying(false);
+                          }
+                        }}
+                        onEnded={() => setIsPlaying(false)}
+                        onWaiting={() => {
+                          // 버퍼링 시에도 1초 가드 적용
+                          const timeSinceAction = Date.now() - lastActionTimeRef.current;
+                          if (timeSinceAction > 1000) {
+                            setIsPlaying(false);
+                          }
+                        }}
                         playsInline
                         loop
                       />
