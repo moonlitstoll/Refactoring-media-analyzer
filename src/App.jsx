@@ -59,10 +59,8 @@ class ErrorBoundary extends React.Component {
 const TranscriptItem = memo(({
   item, idx, isActive, isGlobalLooping, manualScrollNonce,
   seekTo, jumpToSentence, toggleLoop,
-  onPrev, onNext,
   isLooping, showAnalysis, toggleGlobalAnalysis,
-  showTranslations,
-  onQuickSync
+  showTranslations
 }) => {
   const itemRef = useRef(null);
 
@@ -238,6 +236,7 @@ const App = () => {
   const [manualScrollNonce, setManualScrollNonce] = useState(0);
 
   const triggerManualScroll = useCallback(() => setManualScrollNonce(Date.now()), []);
+  const toggleGlobalAnalysis = useCallback(() => setShowAnalysis(prev => !prev), []);
 
 
   const videoRef = useRef(null);
@@ -1283,17 +1282,16 @@ const App = () => {
                             item={item}
                             idx={idx}
                             isActive={isActive}
-                            manualScrollNonce={manualScrollNonce}
+                            // [PERFORMANCE] Only pass nonce to active item to prevent mass re-renders
+                            manualScrollNonce={isActive ? manualScrollNonce : 0}
                             seekTo={seekTo}
                             jumpToSentence={jumpToSentence}
                             toggleLoop={toggleLoop}
-                            onPrev={() => handlePrev(idx)}
-                            onNext={() => handleNext(idx)}
                             isLooping={isActive && isGlobalLoopActive}
                             isGlobalLooping={isGlobalLoopActive}
                             showAnalysis={showAnalysis}
                             showTranslations={showTranslations}
-                            toggleGlobalAnalysis={() => setShowAnalysis(!showAnalysis)}
+                            toggleGlobalAnalysis={toggleGlobalAnalysis}
                           />
                         );
                       })}
