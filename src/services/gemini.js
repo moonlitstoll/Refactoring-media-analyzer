@@ -21,30 +21,27 @@ const STAGE1_PROMPT = `
 `;
 
 const STAGE2_PROMPT = `
-당신은 베트남어와 영어 전문 학습 조력자입니다. 
-주어진 각 문장을 '의미 청크(Chunk)' 단위로 분해하고, 아래 7가지 규칙을 엄격히 준수하여 한국어로 분석하십시오.
+너는 베트남어와 영어 전문 학습 조력자야. 모든 분석은 모바일 가독성을 최우선으로 하며, 아래 7가지 규칙을 엄격히 준수해.
 
 **[7대 분석 규칙]**
-1. **청크 우선 분석**: 문장을 기계적으로 쪼개지 말고, 의미가 연결되는 덩어리(Chunk) 단위로 먼저 나누어 보여주십시오.
-2. **전수 및 순차 분석**: 각 청크 아래에서 모든 단어를 등장 순서대로 하나도 빠짐없이 분석하십시오.
-3. **중복 설명 허용**: 이전에 나온 단어라도 문장에 다시 등장하면 생략 없이 똑같이 다시 설명하십시오.
-4. **베트남어 한자 풀이**: 한자 복합어는 반드시 각 음절의 뜻을 풀어서 설명하십시오. (예: hiện (나타날 현) + tại (있을 재)). 단, 한자(漢字) 자체는 절대 표기하지 말고 한글 음과 뜻만 적으십시오.
-5. **패턴 명시 및 연결**: 회화 핵심 패턴은 단어 옆에 **(패턴)**이라고 표기하고, 상관 접속사처럼 짝이 있는 경우 **(A와 연결)**이라고 명시하십시오.
-6. **문법 용어 배제**: '대명사, 조동사, 형용사' 같은 문법 용어는 삭제하고 핵심 의미 위주로만 요약하십시오.
-7. **모바일 최적화**: 인용구나 불필요한 서술은 제외하고, 줄바꿈을 적극 활용하여 핵심 정보만 콤팩트하게 보여주십시오. **청크와 청크 사이에는 반드시 빈 줄을 하나 두어 구분하십시오.**
+1. 청크 우선 분석: 문장을 기계적으로 쪼개지 말고, 의미가 연결되는 덩어리(Chunk) 단위로 먼저 나누어 보여줘.
+2. 전수 및 순차 분석: 각 청크 아래에서 모든 단어를 등장 순서대로 하나도 빠짐없이 분석해.
+3. 중복 설명 허용: 이전에 나온 단어라도 문장에 다시 등장하면 생략 없이 똑같이 다시 설명해.
+4. 베트남어 한자 풀이: 한자 기반 복합어는 반드시 각 음절의 뜻을 풀어서 설명해. (예: tiền (돈 전) + cọc (보증)). 단, 한자(漢字) 자체는 표기하지 말고 한글 음과 뜻만 적어.
+5. 패턴 명시 및 연결: 회화 핵심 패턴은 단어 옆에 **(패턴)**이라고 표기하고, 상관 접속사처럼 짝이 있는 경우 **(A와 연결)**이라고 명시해.
+6. 문법 용어 배제: '대명사, 조동사, 형용사' 같은 딱딱한 문법 용어는 모두 삭제하고 핵심 의미 위주로만 요약해.
+7. 모바일 최적화: 인용구(\` \`)나 불필요한 서술은 제외하고, 줄바꿈을 활용해 핵심 정보만 콤팩트하게 보여줘. **청크와 청크 사이에는 반드시 빈 줄을 하나 두어 구분해.**
 
 **[응답 형식 - Light JSON]**
-반드시 아래와 같은 구조의 JSON 배열로 응답하십시오:
+반드시 아래와 같은 구조의 JSON 배열로 응답하고, 분석 문자열 내부에 \`[Chunk 1]\`과 같은 식별용 태그는 절대 사용하지 마십시오:
 [
   [번호(Index), "전체 한국어 번역", "줄바꿈과 볼드가 포함된 상세 분석 문자열"],
   ...
 ]
 
 **[분석 문자열 스타일 가이드]**
-- **태그 금지**: \`[Chunk 1]\`과 같은 식별용 태그를 절대 사용하지 마십시오.
-- **헤더 볼드**: 청크의 원어와 해석 헤더는 \`**원어** (해석)\` 형식으로 볼드 처리하십시오.
-
-**[분석 문자열 예시]**
+- **헤더 볼드**: 각 청크의 시작(헤더)은 \`**원어** (해석)\` 형식으로 두껍게 표시해줘.
+- **예시**:
 **Lâu lắm rồi** (정말 오랜만이다)
 Lâu: (시간이) 오래되다
 lắm: 아주, 매우
@@ -52,9 +49,8 @@ rồi: 이미 (시간의 경과를 나타냄)
 
 **chưa có được lại cảm giác sinh viên** (아직 학생의 감각을 다시 느껴보지 못했다)
 chưa: 아직 ~하지 않다
-có: 가지다, 있다
-được: ~할 수 있다, ~되다
-`;
+...
+\`;
 
 const getModels = (modelId) => {
     const validModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
@@ -91,7 +87,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
-    console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName}`);
+    console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${ modelName } `);
 
     try {
         console.log(`[Stage 1] Using inlineData for transcription.`);
@@ -138,7 +134,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
         return normalizeTimestamps(allSentences);
     } catch (err) {
-        console.error(`Stage 1 Global Timeline Error:`, err);
+        console.error(`Stage 1 Global Timeline Error: `, err);
         throw err;
     }
 }
@@ -155,7 +151,7 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
     try {
         const result = await model.generateContent([
             STAGE2_PROMPT,
-            `분석 대상:\n${JSON.stringify(sentences.map((s, i) => [i, s.o]))}`
+            `분석 대상: \n${ JSON.stringify(sentences.map((s, i) => [i, s.o])) } `
         ]);
         let text = await result.response.text();
         const start = text.indexOf('['), end = text.lastIndexOf(']');
@@ -178,7 +174,7 @@ function normalizeTimestamps(data) {
             // toFixed(2) ensures "05.20" instead of "5.2"
             const formattedSS = secNum.toFixed(2).padStart(5, '0');
 
-            s = `${mm}:${formattedSS}`;
+            s = `${ mm }:${ formattedSS } `;
         }
         return { ...item, s };
     }).sort((a, b) => {
