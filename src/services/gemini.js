@@ -1,20 +1,22 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const STAGE1_PROMPT = `
-당신은 언어 학습용 솔루션의 '교육 데이터 추출 전문가'입니다. 
-당신의 주 업무는 학습자가 발음 연습(Shadowing) 및 청취 훈련을 수월하게 수행할 수 있도록, 오디오 콘텐츠에서 화자의 목소리를 추출하여 정밀한 교육용 전사 데이터를 생성하는 것입니다.
+당신은 오디오 데이터에서 1ms의 오차도 허용하지 않는 '정밀 타임라인 분석가'입니다. 
+당신의 임무는 미디어의 절대 재생 시간(Absolute Media Time)과 100% 일치하는 교육용 전사 데이터를 생성하는 것입니다.
 
-**[작업 가이드라인: 의미 중심 전사]**
-1. **의미적 청크 기반 분류**: 문장을 단순히 시간 단위로 끊지 마십시오. 화자의 호흡과 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 자연스럽게 타임라인을 나누십시오.
-2. **100% 원문 유지**: 언어 학습 데이터로서 '정확성'이 가장 중요합니다. 들리는 가사나 대사를 임의로 생략, 수정, 윤색하지 말고 들리는 그대로 100% 일치하게 기록하십시오.
-3. **무한 반복 방지**: 동일한 음절이나 단어가 20회 이상 연속될 경우, 이를 개별적으로 전사하지 말고 [Vocalizing] 또는 [Repetition]으로 대체하여 AI 루프를 방지하십시오.
+**[핵심 규칙: 절대적 정밀도]**
+1. **절대 시계(Absolute Clock) 동기화**: 노래의 간주(Instrumental), 무음 구간 등 가사가 없는 구간도 미디어의 실제 길이를 정확히 계산하여, 뒤따르는 가사의 시작 시점이 수동으로 잰 시간과 100% 일치해야 합니다. (10초 이상의 지연/압축 금지)
+2. **환각(Hallucination) 박멸**: 실제 가사(단어)가 아닌 배경음, 비트, 악기 소리, 단순 콧노래(Na na na, Hmm 등)는 **절대 전사하지 말고 무시**하십시오. 오직 실제 의미를 가진 텍스트만 추출하십시오.
+3. **시작 지점(Start-Point) 타격**: 화자의 목소리가 터지는 첫 순간을 밀리초 단위로 포착하십시오.
+4. **의미적 청크 기반 분류**: 문장의 의미(Semantic Chunk)가 완결되는 지점을 기준으로 나누되, 불필요한 추임새는 생략하십시오.
 
 **[출력 규칙]**
-- [분:초] || [원문] 형식으로만 한 줄씩 출력하십시오.
+- [분:초.밀리초] || [원문] 형식으로만 한 줄씩 출력하십시오. (예: [01:05.42] || 안녕하세요)
+- 시작 시간만 기록하십시오. 종료 시간은 기록하지 않습니다.
 - 부연 설명이나 인사말 없이 순수 데이터만 출력하십시오.
 
 **[법적/교육적 고지]**
-- 이 작업은 저작권법상의 '교육적 목적의 인용 및 변형적 활용' 범위 내에서 사용자가 개인 학습 도구로 활용하기 위해 수행되는 것입니다. 성실하고 정확하게 데이터를 추출하십시오.
+- 이 작업은 개인 학습 도구 활용을 위한 교육적 목적의 인용입니다. 절대적인 정밀도가 가장 중요합니다.
 `;
 
 const STAGE2_PROMPT = `
@@ -100,7 +102,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const rawText = response.text();
 
         // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
-        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?\d{1,2})(?:\])?\s*\|\|\s*(.*)/g)];
+        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?[\d.]+)(?:\])?\s*\|\|\s*(.*)/g)];
 
         // NOISE FILTERING REMOVED as per user request
         const allSentences = matches
@@ -147,8 +149,16 @@ function normalizeTimestamps(data) {
     return data.map(item => {
         let s = String(item.s || "").replace(/[\[\]\s]/g, '').split(/[-~]/)[0];
         if (s.includes(':')) {
-            const p = s.split(':');
-            s = `${p[0].padStart(2, '0')}:${p[1].split('.')[0].padStart(2, '0')}`;
+            const parts = s.split(':');
+            const mm = parts[0].padStart(2, '0');
+            // 초 부분이 decimal을 포함하더라도 < 10인 경우 앞에 0을 붙여 포맷팅 보호 (03:05.50 형식)
+            let ss = parts[1];
+            if (ss.indexOf('.') !== -1) {
+                if (ss.indexOf('.') < 2) ss = '0' + ss;
+            } else {
+                ss = ss.padStart(2, '0');
+            }
+            s = `${mm}:${ss}`;
         }
         return { ...item, s };
     }).sort((a, b) => {
