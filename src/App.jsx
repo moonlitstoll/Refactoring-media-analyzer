@@ -110,7 +110,6 @@ const TranscriptItem = memo(({
   return (
     <div
       ref={itemRef}
-      style={{ scrollMarginTop: '24px' }} // [Phase 4] 가독성을 위한 상단 여백 (1.5rem)
       className={`
         group relative transition-all duration-300 ease-out mb-2 rounded-xl border border-l-[4px] p-2.5 sm:px-4 sm:py-5
         ${isActive
