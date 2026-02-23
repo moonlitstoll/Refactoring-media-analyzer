@@ -710,26 +710,34 @@ const App = () => {
           toggleGlobalAnalysis();
           break;
         case 'ArrowLeft':
+          e.preventDefault();
           if (data.length > 0) {
-            const idx = currentIdx !== -1 ? currentIdx : 0;
-            const prevIdx = (idx - 1 + data.length) % data.length;
-            jumpToSentence(prevIdx);
+            const idx = activeIdxRef.current !== null ? activeIdxRef.current : 0;
+            const prevIdx = Math.max(0, idx - 1);
+            if (prevIdx !== idx) jumpToSentence(prevIdx);
           }
           break;
         case 'ArrowRight':
+          e.preventDefault();
           if (data.length > 0) {
-            const idx = currentIdx !== -1 ? currentIdx : 0;
-            const nextIdx = (idx + 1) % data.length;
-            jumpToSentence(nextIdx);
+            const idx = activeIdxRef.current !== null ? activeIdxRef.current : 0;
+            const nextIdx = Math.min(data.length - 1, idx + 1);
+            if (nextIdx !== idx) jumpToSentence(nextIdx);
           }
           break;
         case 'ArrowUp':
           e.preventDefault();
-          if (videoRef.current) videoRef.current.currentTime -= 5;
+          if (videoRef.current) {
+            lastActionTimeRef.current = Date.now();
+            videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 5);
+          }
           break;
         case 'ArrowDown':
           e.preventDefault();
-          if (videoRef.current) videoRef.current.currentTime += 5;
+          if (videoRef.current) {
+            lastActionTimeRef.current = Date.now();
+            videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 5);
+          }
           break;
       }
     };
