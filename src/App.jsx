@@ -684,41 +684,55 @@ const App = () => {
 
   // Rate effect handled above for better synchronization
 
-  // Keyboard
+  // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!mediaUrl || !activeFile?.data?.length) return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-      if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-
-      const now = videoRef.current ? videoRef.current.currentTime : 0;
       const data = activeFile.data;
-      const currentIdx = activeSentenceIdx; // Use the globally calculated active index
+      const currentIdx = activeIdxRef.current !== null ? activeIdxRef.current : -1;
 
       switch (e.code) {
-        case 'Enter': toggleLoop(); break;
+        case 'Space':
+          e.preventDefault();
+          togglePlay();
+          break;
+        case 'Enter':
+          e.preventDefault();
+          toggleLoop();
+          break;
+        case 'KeyB':
+          e.preventDefault();
+          toggleGlobalAnalysis();
+          break;
         case 'ArrowLeft':
           if (data.length > 0) {
             const idx = currentIdx !== -1 ? currentIdx : 0;
-            const prevIdx = (idx - 1 + data.length) % activeFile.data.length;
+            const prevIdx = (idx - 1 + data.length) % data.length;
             jumpToSentence(prevIdx);
           }
           break;
         case 'ArrowRight':
           if (data.length > 0) {
             const idx = currentIdx !== -1 ? currentIdx : 0;
-            const nextIdx = (idx + 1) % activeFile.data.length;
+            const nextIdx = (idx + 1) % data.length;
             jumpToSentence(nextIdx);
           }
           break;
-        case 'ArrowUp': e.preventDefault(); if (videoRef.current) videoRef.current.currentTime -= 5; break;
-        case 'ArrowDown': e.preventDefault(); if (videoRef.current) videoRef.current.currentTime += 5; break;
+        case 'ArrowUp':
+          e.preventDefault();
+          if (videoRef.current) videoRef.current.currentTime -= 5;
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          if (videoRef.current) videoRef.current.currentTime += 5;
+          break;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [mediaUrl, activeFile, togglePlay, toggleLoop, handlePrev, handleNext]);
+  }, [mediaUrl, activeFile, togglePlay, toggleLoop, toggleGlobalAnalysis, jumpToSentence]);
 
   // --- STATE RESET LOGIC ---
   const resetPlayerState = useCallback(() => {
