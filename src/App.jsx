@@ -138,7 +138,7 @@ const TranscriptItem = memo(({
         <div
           onClick={() => jumpToSentence(idx)}
           className={`
-            text-xl sm:text-2xl md:text-3xl leading-snug cursor-pointer transition-all duration-300 mb-1 px-1
+            text-xl sm:text-2xl md:text-3xl leading-snug cursor-pointer transition-all duration-300 mb-1 px-1 font-bold
             ${isActive ? 'text-black' : 'text-slate-900'}
           `}
         >
