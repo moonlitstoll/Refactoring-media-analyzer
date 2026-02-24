@@ -12,12 +12,17 @@ import { mediaStore } from './utils/MediaStore';
 
 // Helper: Get Media Duration
 const getMediaDuration = (file) => {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const media = document.createElement(file.type.startsWith('video') ? 'video' : 'audio');
     media.preload = 'metadata';
     media.onloadedmetadata = () => {
-      window.URL.revokeObjectURL(media.src);
+      // Delay revocation to ensure no active reads fail in the background logic
+      setTimeout(() => window.URL.revokeObjectURL(media.src), 5000);
       resolve(media.duration);
+    };
+    media.onerror = () => {
+      window.URL.revokeObjectURL(media.src);
+      reject(new Error("Failed to load media metadata. The file may be corrupted or unsupported."));
     };
     media.src = URL.createObjectURL(file);
   });
@@ -1043,7 +1048,7 @@ const App = () => {
                   placeholder="Enter your API Key"
                   className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
-                <button onClick={() => saveApiKey(apiKey)} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl">Save Key</button>
+                <button onClick={() => saveConfiguration(apiKey, selectedModel)} className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl">Save Key</button>
 
                 <div className="pt-4 border-t border-slate-100">
                   <p className="text-xs text-slate-400 text-center">
