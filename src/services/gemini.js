@@ -137,8 +137,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             console.warn(`[Stage 1] No matches found in raw text. First 500 chars:`, rawText.substring(0, 500));
         }
 
-        // 2. Client-side protection: Detecting mechanical loops (A->B->A->B patterns or 1s repetitions)
-        const allSentences = filterMechanicalLoops(parsedSentences);
+        // 2. 기계적 루프 필터링 끄기 (모든 반복 문장 보존)
+        const allSentences = parsedSentences;
 
         if (allSentences.length === 0) {
             throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다. (AI 응답 길이: ${rawText.length})`);

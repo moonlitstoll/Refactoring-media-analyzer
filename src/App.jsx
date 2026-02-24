@@ -322,11 +322,7 @@ const App = () => {
         let text = item.o || item.text || "(No text)";
         const translation = item.t || item.translation || "";
 
-        // FILTER: Remove non-verbal elements, but PROTECT fallback markers like (Inaudible)
-        const isFallback = text.includes('(가사/대사 분석 불가 구간)') || text.includes('(Inaudible)');
-        if (!isFallback) {
-          text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim();
-        }
+        // 텍스트 필터링 로직 완전 제거 (원본 유지)
 
         // Handle patterns
         let patterns = item.p || item.patterns || [];
@@ -376,7 +372,7 @@ const App = () => {
           isAnalyzed: item.isAnalyzed || !!(item.a || item.analysis)
         };
       })
-      .filter(item => item.text && item.text.trim() !== "" && !item.text.includes('(Inaudible)') && !item.text.includes('(가사/대사 분석 불가 구간)'))
+      .filter(item => item.text && item.text.trim() !== "")
       .sort((a, b) => a.startSeconds - b.startSeconds);
   };
 
