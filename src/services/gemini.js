@@ -122,13 +122,14 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         console.log(`[Stage 1] Raw AI Response Length: ${rawText.length}`);
 
         // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
-        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?[\d.]+)(?:\])?\s*\|\|\s*(.*)/g)];
+        // Make the `||` separator optional to prevent dropping data when AI omits it
+        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?[\d.]+)(?:\])?\s*(?:\|\|)?\s*(.*)/g)];
 
         // 1. Parsing and Rhythmic Loop Detection
         const parsedSentences = matches
             .map(m => ({
                 s: m[1],
-                o: m[3].trim()
+                o: m[3] ? m[3].replace(/^\|\|\s*/, '').trim() : '' // fallback strip if regex grouping gets weird
             }))
             .filter(item => item.o.length > 0);
 
