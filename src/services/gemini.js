@@ -13,8 +13,10 @@ const STAGE1_PROMPT = `
 - 밀리초 부분은 반드시 소수점 두 자리(0.01초 단위)로 고정하십시오. (예: [01:23.45])
 - 시작 시간만 기록하십시오. 부연 설명 없이 데이터만 출력하십시오.
 
-**[침묵의 정의]**
-- 실제 대화가 없는 구간은 텍스트를 출력하지 마십시오. 공백을 메우기 위해 이전 문장을 반복하는 것은 환각(Hallucination)이며 절대 금지됩니다.
+**[침묵 및 환각(Hallucination) 엄금]**
+- 실제 대화가 없는 구간은 텍스트를 출력하지 마십시오.
+- **무한 반복 금지**: 동일한 문장을 동일한 타임스탬프 또는 아주 짧은 간격 내에 기계적으로 무한히 반복 출력하는 행위는 치명적인 모델 오류로 간주됩니다. 만약 분석이 어렵다면 반복하지 말고 즉시 전사를 중단하거나 다음으로 넘어가십시오.
+- 공백을 메우기 위해 이전 문장을 반복하는 행위는 절대 금지됩니다.
 `;
 
 const STAGE2_PROMPT = `
@@ -99,7 +101,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                temperature: 0.2 // Slightly increased from 0.1 to help escape AI loops
+                temperature: 0.1 // Lower temperature to minimize hallucination loops
             },
             safetySettings
         }, { apiVersion: "v1beta" });
@@ -137,8 +139,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             console.warn(`[Stage 1] No matches found in raw text. First 500 chars:`, rawText.substring(0, 500));
         }
 
-        // 2. 기계적 루프 필터링 끄기 (모든 반복 문장 보존)
-        const allSentences = parsedSentences;
+        // 2. 스마트 기계적 루프 필터링 (시간이 흐르지 않는 무한 루프만 정밀 차단)
+        const allSentences = filterMechanicalLoops(parsedSentences);
 
         if (allSentences.length === 0) {
             throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다. (AI 응답 길이: ${rawText.length})`);
@@ -207,8 +209,8 @@ function normalizeTimestamps(data) {
 }
 
 /**
- * Filter out mechanical loops where patterns repeat with identical or rhythmic timing.
- * Specifically targets 1-second interval loops reported by user.
+ * Smart Filter: Detects and collapses mechanical hallucination loops.
+ * Protects normal repetitions (e.g., song chorus) by checking timestamps.
  */
 function filterMechanicalLoops(items) {
     if (items.length < 5) return items;
@@ -220,51 +222,36 @@ function filterMechanicalLoops(items) {
     };
 
     const result = [];
+    let repeatCount = 0;
 
-    // Detect repeating window (1-word or multi-word pattern)
     for (let i = 0; i < items.length; i++) {
-        let skipCurrent = false;
+        const current = items[i];
+        const prev = i > 0 ? items[i - 1] : null;
 
-        // Pattern A: Single sentence repeating with very close or periodic timing
-        if (i > 3) {
-            const current = items[i];
-            const prev = items[i - 1];
+        if (prev) {
             const timeDiff = parseTime(current.s) - parseTime(prev.s);
+            const isSameText = current.o === prev.o;
 
-            // If time diff is exactly 1s or 0.5s multiple (common hallu symptom) and same text
-            if (current.o === prev.o && (Math.abs(timeDiff % 1) < 0.05 || timeDiff < 0.1)) {
-                // Check if this has happened several times
-                let repeatCount = 0;
-                for (let j = i - 1; j >= 0; j--) {
-                    if (items[j].o === current.o) repeatCount++;
-                    else break;
-                }
-                if (repeatCount >= 5) {
-                    console.warn(`[Filter] Skipping mechanical single-line loop at ${current.s}: "${current.o}"`);
-                    skipCurrent = true;
-                }
-            }
+            // SMART DETECTION: 
+            // 1. Same text AND
+            // 2. Time has NOT advanced (less than 0.1s difference)
+            const isStuckLoop = isSameText && Math.abs(timeDiff) < 0.1;
 
-            // Pattern B: Rhythmic sequence loop [A, B] -> [A, B]
-            if (!skipCurrent && i > 6) {
-                const patternSize = 2; // e.g., Pair repeat
-                if (items[i].o === items[i - patternSize].o && items[i - 1].o === items[i - patternSize - 1].o) {
-                    let seqCount = 0;
-                    for (let k = 1; k < 4; k++) {
-                        const baseIdx = i - (k * patternSize);
-                        if (baseIdx - 1 < 0) break;
-                        if (items[i].o === items[baseIdx].o && items[i - 1].o === items[baseIdx - 1].o) seqCount++;
-                    }
-                    if (seqCount >= 3) {
-                        console.warn(`[Filter] Skipping rhythmic sequence loop item at ${items[i].s}`);
-                        skipCurrent = true;
-                    }
-                }
+            if (isStuckLoop) {
+                repeatCount++;
+            } else {
+                repeatCount = 0;
             }
+        } else {
+            repeatCount = 0;
         }
 
-        if (!skipCurrent) {
-            result.push(items[i]);
+        // Only block if we've seen the exact same line at the exact same time more than 5 times.
+        // This stops 4000+ line explosions while keeping regular repeats where time moves forward.
+        if (repeatCount < 5) {
+            result.push(current);
+        } else if (repeatCount === 5) {
+            console.warn(`[Filter] AI Hallucination Loop Detected at ${current.s}. Collapsing subsequent repeats.`);
         }
     }
 
