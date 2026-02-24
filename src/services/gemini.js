@@ -207,11 +207,10 @@ function filterMechanicalLoops(items) {
     };
 
     const result = [];
-    let loopDetected = false;
 
     // Detect repeating window (1-word or multi-word pattern)
     for (let i = 0; i < items.length; i++) {
-        if (loopDetected) break;
+        let skipCurrent = false;
 
         // Pattern A: Single sentence repeating with very close or periodic timing
         if (i > 3) {
@@ -228,14 +227,13 @@ function filterMechanicalLoops(items) {
                     else break;
                 }
                 if (repeatCount >= 5) {
-                    console.warn(`[Filter] Detected mechanical single-line loop at ${current.s}: "${current.o}"`);
-                    loopDetected = true;
-                    break;
+                    console.warn(`[Filter] Skipping mechanical single-line loop at ${current.s}: "${current.o}"`);
+                    skipCurrent = true;
                 }
             }
 
             // Pattern B: Rhythmic sequence loop [A, B] -> [A, B]
-            if (i > 6) {
+            if (!skipCurrent && i > 6) {
                 const patternSize = 2; // e.g., Pair repeat
                 if (items[i].o === items[i - patternSize].o && items[i - 1].o === items[i - patternSize - 1].o) {
                     let seqCount = 0;
@@ -245,14 +243,16 @@ function filterMechanicalLoops(items) {
                         if (items[i].o === items[baseIdx].o && items[i - 1].o === items[baseIdx - 1].o) seqCount++;
                     }
                     if (seqCount >= 3) {
-                        console.warn(`[Filter] Detected rhythmic sequence loop ending at ${items[i].s}`);
-                        loopDetected = true;
-                        break;
+                        console.warn(`[Filter] Skipping rhythmic sequence loop item at ${items[i].s}`);
+                        skipCurrent = true;
                     }
                 }
             }
         }
-        result.push(items[i]);
+
+        if (!skipCurrent) {
+            result.push(items[i]);
+        }
     }
 
     return result;
