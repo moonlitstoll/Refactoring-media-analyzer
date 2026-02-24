@@ -119,6 +119,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         }
 
         const rawText = response.text();
+        console.log(`[Stage 1] Raw AI Response Length: ${rawText.length}`);
 
         // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
         const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?[\d.]+)(?:\])?\s*\|\|\s*(.*)/g)];
@@ -131,11 +132,15 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             }))
             .filter(item => item.o.length > 0);
 
+        if (parsedSentences.length === 0) {
+            console.warn(`[Stage 1] No matches found in raw text. First 500 chars:`, rawText.substring(0, 500));
+        }
+
         // 2. Client-side protection: Detecting mechanical loops (A->B->A->B patterns or 1s repetitions)
         const allSentences = filterMechanicalLoops(parsedSentences);
 
         if (allSentences.length === 0) {
-            throw new Error("분석 결과에서 데이터를 찾을 수 없습니다.");
+            throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다. (AI 응답 길이: ${rawText.length})`);
         }
 
         return normalizeTimestamps(allSentences);
