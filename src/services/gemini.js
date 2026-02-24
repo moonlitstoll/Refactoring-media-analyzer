@@ -166,8 +166,21 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
             `분석 대상: \n${JSON.stringify(sentences.map((s, i) => [i, s.o]))} `
         ]);
         let text = await result.response.text();
-        const start = text.indexOf('['), end = text.lastIndexOf(']');
-        return JSON.parse(text.substring(start, end + 1));
+        const start = text.indexOf('[');
+        const end = text.lastIndexOf(']');
+        let jsonStr = (start !== -1 && end > start) ? text.substring(start, end + 1) : text.substring(start !== -1 ? start : 0);
+
+        try {
+            return JSON.parse(jsonStr);
+        } catch (parseError) {
+            console.warn("[Stage 2] 불완전한 JSON 응답 감지, 끝단 보정 스크립트 실행...");
+            let repaired = jsonStr.replace(/[^\]"]+$/, '');
+            if ((repaired.match(/"/g) || []).length % 2 !== 0) repaired += '"';
+            for (let i = 0; i < 3; i++) {
+                try { return JSON.parse(repaired); } catch (e) { repaired += ']'; }
+            }
+            throw new Error("JSON Heuristic repair failed");
+        }
     } catch (err) {
         return sentences.map((_, i) => [i, "", []]);
     }

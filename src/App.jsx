@@ -434,6 +434,12 @@ const App = () => {
         // Handle new format {data, metadata} vs legacy format [items...]
         const hasMetadata = parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.data;
         const rawData = hasMetadata ? parsed.data : parsed;
+
+        // [마이그레이션 방어] 데이터 캐시의 형태가 유효한 배열인지 검증
+        if (!Array.isArray(rawData)) {
+          throw new Error("Invalid cache format: Data is not an array. Please clear cache.");
+        }
+
         const metadata = hasMetadata ? parsed.metadata : { name: key.replace('gemini_analysis_', '').replace(/_\d+$/, '') };
 
         const data = sanitizeData(rawData);
@@ -652,19 +658,35 @@ const App = () => {
       }
     };
 
-    // 1. Event Listeners (Standard)
+    let pulseId = null;
+    const managePulse = () => {
+      if (!v.paused && !pulseId) {
+        pulseId = setInterval(runSync, 100);
+      } else if (v.paused && pulseId) {
+        clearInterval(pulseId);
+        pulseId = null;
+      }
+    };
+    const handlePlay = () => { runSync(); managePulse(); };
+    const handlePause = () => { managePulse(); };
+
+    // 1. Event Listeners (Optimized)
     v.addEventListener('timeupdate', runSync);
     v.addEventListener('seeked', runSync);
-    v.addEventListener('playing', runSync);
+    v.addEventListener('playing', handlePlay);
+    v.addEventListener('pause', handlePause);
+    v.addEventListener('ended', handlePause);
 
-    // 2. High-Res Interval (0.1s Pulse to force logic past "stuck" points)
-    const pulseId = setInterval(runSync, 100);
+    // Init pulse based on current state
+    managePulse();
 
     return () => {
       v.removeEventListener('timeupdate', runSync);
       v.removeEventListener('seeked', runSync);
-      v.removeEventListener('playing', runSync);
-      clearInterval(pulseId);
+      v.removeEventListener('playing', handlePlay);
+      v.removeEventListener('pause', handlePause);
+      v.removeEventListener('ended', handlePause);
+      if (pulseId) clearInterval(pulseId);
     };
   }, [activeFile, findActiveIndex, isGlobalLoopActive]);
 
@@ -993,6 +1015,10 @@ const App = () => {
   const removeFile = (id, e) => {
     e.stopPropagation();
     setFiles(prev => {
+      // [메모리 누수 방지] 파일 제거 시 ObjectURL 해제
+      const fileToRemove = prev.find(f => f.id === id);
+      if (fileToRemove && fileToRemove.url) URL.revokeObjectURL(fileToRemove.url);
+
       const newFiles = prev.filter(f => f.id !== id);
       if (activeFileId === id) {
         setActiveFileId(newFiles.length > 0 ? newFiles[0].id : null);
@@ -1003,6 +1029,8 @@ const App = () => {
 
   const removeAllFiles = () => {
     if (confirm("Remove all active files?")) {
+      // [메모리 누수 방지] 모든 활성 파일의 URL 일괄 해제
+      files.forEach(f => { if (f.url) URL.revokeObjectURL(f.url); });
       setFiles([]);
       setActiveFileId(null);
       setShowFileList(false);
