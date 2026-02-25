@@ -184,7 +184,8 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
             throw new Error("JSON Heuristic repair failed");
         }
     } catch (err) {
-        return sentences.map((_, i) => [i, "", []]);
+        console.error(`[Stage 2] API Call Error:`, err);
+        throw err; // Silent Failure 방지를 위해 에러를 상위로 던짐
     }
 }
 

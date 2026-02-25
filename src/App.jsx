@@ -895,12 +895,12 @@ const App = () => {
 
   /**
    * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
-   * Process sentences in batches of 30 to prevent JSON corruption while remaining efficient.
+   * Process sentences in batches of 120 (optimized for 5min clips) to minimize API calls.
    */
   const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting Ultra-Lightweight 30x5 Analysis for file ${fileId}...`);
-    const BATCH_SIZE = 30;
-    const PARALLEL_BATCH_COUNT = 5;
+    console.log(`[Stage 2] Starting Optimized 120x1 Analysis for file ${fileId}...`);
+    const BATCH_SIZE = 120;
+    const PARALLEL_BATCH_COUNT = 1;
 
     let workingData = JSON.parse(JSON.stringify(transcript));
     const updateGlobalState = (data) => {
@@ -914,7 +914,6 @@ const App = () => {
 
     if (pendingIndices.length === 0) return;
 
-    // --- SINGLE PASS: 30x5 PARALLEL EXECUTION ---
     for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE * PARALLEL_BATCH_COUNT) {
       const batchPromises = [];
       for (let j = 0; j < PARALLEL_BATCH_COUNT; j++) {
@@ -928,46 +927,49 @@ const App = () => {
           try {
             const rawResults = await analyzeSentences(batchData, apiKey, modelId);
 
-            // Robust Result Mapper: Prevents TypeError and ensures 100% mapping
-            if (Array.isArray(rawResults)) {
+            if (Array.isArray(rawResults) && rawResults.length > 0) {
+              let appliedCount = 0;
               rawResults.forEach(res => {
-                if (!Array.isArray(res)) return; // Protection against invalid items
+                if (!Array.isArray(res)) return;
 
                 const [localIdx, translation, wordsArr] = res;
                 const globalIdx = batchIndices[localIdx];
 
-                if (globalIdx !== undefined && workingData[globalIdx]) {
+                // 데이터 검증: 번역이나 분석 내용이 하나라도 있어야만 분석됨으로 인정
+                if (globalIdx !== undefined && workingData[globalIdx] && (translation || wordsArr)) {
                   workingData[globalIdx] = {
                     ...workingData[globalIdx],
                     translation: translation || "",
-                    analysis: res[2] || "", // New Light JSON string format
+                    analysis: wordsArr || "",
                     isAnalyzed: true
                   };
+                  appliedCount++;
                 }
               });
-            }
-            updateGlobalState(workingData);
 
-            // [INTERMEDIATE SAVE] Save progress after each batch to avoid data loss
-            if (fileInfo && fileInfo.name) {
-              const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
-              try {
-                localStorage.setItem(cacheKey, JSON.stringify({
-                  data: workingData,
-                  metadata: {
-                    name: fileInfo.name,
-                    size: fileInfo.size,
-                    lastModified: fileInfo.lastModified,
-                    savedAt: Date.now(),
-                    status: 'analyzing'
-                  }
-                }));
-              } catch (e) { }
+              if (appliedCount > 0) {
+                updateGlobalState(workingData);
+
+                // [INTERMEDIATE SAVE]
+                if (fileInfo && fileInfo.name) {
+                  const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
+                  try {
+                    localStorage.setItem(cacheKey, JSON.stringify({
+                      data: workingData,
+                      metadata: {
+                        name: fileInfo.name,
+                        size: fileInfo.size,
+                        lastModified: fileInfo.lastModified,
+                        savedAt: Date.now(),
+                        status: 'analyzing'
+                      }
+                    }));
+                  } catch (e) { }
+                }
+              }
             }
           } catch (err) {
-            console.error(`[Stage 2] Critical Batch Error:`, err);
-            // Safety: Mark as analyzed even if we had an error to avoid getting stuck
-            batchIndices.forEach(idx => { workingData[idx].isAnalyzed = true; });
+            console.error(`[Stage 2] Batch Error (Skipping auto-marking):`, err);
           }
         })());
       }
@@ -977,10 +979,7 @@ const App = () => {
       }
     }
 
-    // FINAL SYNC & PERSISTENT CACHE
-    workingData = workingData.map(item => ({ ...item, isAnalyzed: true }));
-    updateGlobalState(workingData);
-
+    // FINAL PERSISTENT CACHE (Only if changed)
     if (fileInfo && fileInfo.name) {
       const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
       try {
@@ -991,12 +990,12 @@ const App = () => {
             size: fileInfo.size,
             lastModified: fileInfo.lastModified,
             savedAt: Date.now(),
-            status: 'completed'
+            status: workingData.every(d => d.isAnalyzed) ? 'completed' : 'partially_analyzed'
           }
         }));
       } catch (e) { }
     }
-    console.log(`[Stage 2] Ultra-lightweight analysis completed.`);
+    console.log(`[Stage 2] Analysis processing cycle finished.`);
   };
 
   const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
