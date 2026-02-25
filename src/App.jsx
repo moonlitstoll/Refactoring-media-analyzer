@@ -159,7 +159,7 @@ const TranscriptItem = memo(({
         <div className={`overflow-hidden transition-all duration-500 ease-in-out ${showAnalysis ? 'max-h-[2000px] opacity-100 mt-1 pt-1 border-t border-slate-100' : 'max-h-0 opacity-0 mt-0 pt-0'}`}>
 
           {/* Stage 2 Loading State */}
-          {!item.isAnalyzed && (
+          {!item.isAnalyzed && !item.analysisError && (
             <div className="py-4 px-2 space-y-3 animate-pulse">
               <div className="h-4 bg-slate-100 rounded-md w-3/4" />
               <div className="space-y-2">
@@ -169,6 +169,18 @@ const TranscriptItem = memo(({
               <div className="flex items-center gap-2 text-[11px] text-slate-400 font-bold uppercase tracking-widest">
                 <Clock size={12} className="animate-spin" /> Analyzing Sentence Details...
               </div>
+            </div>
+          )}
+
+          {/* Stage 2 Error State */}
+          {item.analysisError && (
+            <div className="py-3 px-3 mb-2 bg-red-50/50 border border-red-100 rounded-xl text-red-600 text-[13px] font-medium flex items-start gap-2">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                {item.analysisError.includes("RECITATION")
+                  ? "저작권 보호 정책(Recitation)으로 인해 분석이 차단되었습니다. 다른 문장이나 파일을 시도해 보세요."
+                  : `분석 실패: ${item.analysisError}`}
+              </span>
             </div>
           )}
 
@@ -976,7 +988,12 @@ const App = () => {
               }
             }
           } catch (err) {
-            console.error(`[Stage 2] Batch Error (Skipping auto-marking):`, err);
+            console.error(`[Stage 2] Batch Error:`, err);
+            // 에러 정보를 각 항목에 기록
+            batchIndices.forEach(idx => {
+              workingData[idx] = { ...workingData[idx], analysisError: err.message || "Unknown error" };
+            });
+            updateGlobalState(workingData);
           }
         })());
       }

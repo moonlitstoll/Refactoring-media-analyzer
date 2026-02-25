@@ -167,7 +167,14 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
             STAGE2_PROMPT,
             `분석 대상: \n${JSON.stringify(sentences.map((s, i) => [i, s.o]))} `
         ]);
-        let text = await result.response.text();
+        const response = await result.response;
+
+        // 저작권 보호(RECITATION) 체크
+        if (response.candidates && response.candidates[0].finishReason === 'RECITATION') {
+            throw new Error("RECITATION: 저작권 보호 정책으로 인해 이 구간의 분석이 차단되었습니다.");
+        }
+
+        let text = await response.text();
         const start = text.indexOf('[');
         const end = text.lastIndexOf(']');
         let jsonStr = (start !== -1 && end > start) ? text.substring(start, end + 1) : text.substring(start !== -1 ? start : 0);
@@ -185,8 +192,9 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
         }
     } catch (err) {
         console.error(`[Stage 2] API Call Error:`, err);
-        throw err; // Silent Failure 방지를 위해 에러를 상위로 던짐
+        throw err;
     }
+
 }
 
 function normalizeTimestamps(data) {
