@@ -902,12 +902,13 @@ const App = () => {
 
   /**
    * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
-   * Process sentences in batches of 120 (optimized for 5min clips) to minimize API calls.
+   * Process sentences in batches of 50, running 2 batches simultaneously to balance
+   * speed and Gemini API rate limits while keeping JSON truncation risk low.
    */
   const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting Optimized 120x1 Analysis for file ${fileId}...`);
-    const BATCH_SIZE = 120;
-    const PARALLEL_BATCH_COUNT = 1;
+    console.log(`[Stage 2] Starting Optimized 50x2 Analysis for file ${fileId}...`);
+    const BATCH_SIZE = 50;
+    const PARALLEL_BATCH_COUNT = 2;
 
     let workingData = JSON.parse(JSON.stringify(transcript));
     const updateGlobalState = (data) => {

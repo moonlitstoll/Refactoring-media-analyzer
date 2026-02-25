@@ -176,6 +176,20 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
             return JSON.parse(jsonStr);
         } catch (parseError) {
             console.warn("[Stage 2] 불완전한 JSON 응답 감지, 끝단 보정 스크립트 실행...");
+
+            // [강화] 1단계: 마지막으로 완전히 닫힌 배열 요소까지 복구 시도
+            // 응답이 중간에 잘렸더라도 완전한 요소들은 살려냄
+            const lastComplete = jsonStr.lastIndexOf('],');
+            if (lastComplete !== -1) {
+                const trimmed = jsonStr.substring(0, lastComplete + 1) + ']';
+                try {
+                    const result = JSON.parse(trimmed);
+                    console.warn(`[Stage 2] 부분 복구 성공: ${result.length}개 항목 살림`);
+                    return result;
+                } catch (e) { /* 폴백 진행 */ }
+            }
+
+            // 2단계: 기존 Heuristic (짧게 잘린 경우)
             let repaired = jsonStr.replace(/[^\]"]+$/, '');
             if ((repaired.match(/"/g) || []).length % 2 !== 0) repaired += '"';
             for (let i = 0; i < 3; i++) {
