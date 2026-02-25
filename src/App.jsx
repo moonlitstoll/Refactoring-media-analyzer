@@ -485,6 +485,13 @@ const App = () => {
         setActiveFileId(id);
         setShowSettings(false);
         setShowCacheHistory(false);
+
+        // [문제 3 수정] 미완성 분석 데이터가 있으면 Stage 2 자동 재시작
+        const hasPending = data.some(d => !d.isAnalyzed);
+        if (hasPending && apiKey && newFileEntry.file?.name) {
+          console.log(`[Cache Load] ${data.filter(d => !d.isAnalyzed).length} pending items detected. Resuming Stage 2...`);
+          runStage2(id, newFileEntry.file, data, apiKey, selectedModel);
+        }
       } catch (e) {
         console.error("Failed to load cache:", e);
         alert("Failed to load cached data.");
@@ -979,7 +986,17 @@ const App = () => {
       }
     }
 
-    // FINAL PERSISTENT CACHE (Only if changed)
+    // [문제 1 수정] 실패한 항목에 에러 플래그를 달아 UI 영구 로딩 방지
+    const failedCount = workingData.filter(d => !d.isAnalyzed).length;
+    if (failedCount > 0) {
+      console.warn(`[Stage 2] ${failedCount} items failed. Marking with error flag to release UI.`);
+      workingData = workingData.map(item =>
+        item.isAnalyzed ? item : { ...item, isAnalyzed: true, analysisError: true }
+      );
+      updateGlobalState(workingData);
+    }
+
+    // FINAL PERSISTENT CACHE
     if (fileInfo && fileInfo.name) {
       const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
       try {
@@ -990,12 +1007,12 @@ const App = () => {
             size: fileInfo.size,
             lastModified: fileInfo.lastModified,
             savedAt: Date.now(),
-            status: workingData.every(d => d.isAnalyzed) ? 'completed' : 'partially_analyzed'
+            status: failedCount === 0 ? 'completed' : 'partially_analyzed'
           }
         }));
       } catch (e) { }
     }
-    console.log(`[Stage 2] Analysis processing cycle finished.`);
+    console.log(`[Stage 2] Analysis processing cycle finished. (${failedCount} failed)`);
   };
 
   const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
