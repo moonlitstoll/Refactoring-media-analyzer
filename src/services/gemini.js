@@ -131,16 +131,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const parsedSentences = matches
             .map(m => ({
                 s: m[1],
-                o: m[3]
-                    ? m[3]
-                        .replace(/^\|\|\s*/, '')                                          // 선행 || 제거
-                        .replace(/^\[?\d{1,2}:\d{2}[\d.]*\]?\s*(\|\|)?\s*/g, '')          // 선행 타임스탬프 패턴 제거 (문제 5)
-                        .trim()
-                    : ''
+                o: m[3] ? m[3].replace(/^\|\|\s*/, '').trim() : '' // fallback strip if regex grouping gets weird
             }))
-            .filter(item => item.o.length > 0)
-            .filter(item => !/^\[?\d{1,2}:\d{2}[\d.]*\]?\s*(\|\|)?\s*$/.test(item.o));   // 타임스탬프 전용 항목 제거 (문제 4)
-
+            .filter(item => item.o.length > 0);
 
         if (parsedSentences.length === 0) {
             console.warn(`[Stage 1] No matches found in raw text. First 500 chars:`, rawText.substring(0, 500));
