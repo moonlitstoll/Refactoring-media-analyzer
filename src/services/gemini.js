@@ -119,9 +119,6 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         let allMatches = [];
         let lastTime = -1;
         let lastText = "";
-        let consecutiveRepeatCount = 0;       // 시간에 관계없이 텍스트만 같은 경우
-        let consecutiveSameTimeCount = 0;     // 시간과 텍스트가 모두 동일한 경우
-        let hallucinationDetected = false;
 
         // ★ 실시간 스트리밍 수신 + 서킷 브레이커
         for await (const chunk of streamResult.stream) {
@@ -156,34 +153,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
                 const currentTime = parseTimeString(timeStr);
                 const isSameText = content === lastText;
-                const isSameTime = Math.abs(currentTime - lastTime) < 0.1;
-                const wordsCount = content.split(/\s+/).length;
 
+                // 똑같은 내용이 연달아 나오면 시간 전진 여부와 상관없이 대본에 추가하지 않고 무시 (Drop)
                 if (isSameText) {
-                    consecutiveRepeatCount++;
-                    if (isSameTime) consecutiveSameTimeCount++;
-                    else consecutiveSameTimeCount = 1;
-                } else {
-                    consecutiveRepeatCount = 1;
-                    consecutiveSameTimeCount = 1;
-                }
-
-                // 타임스탬프가 정지된 상태로 3번 연속 반복되면 즉시 중단
-                if (consecutiveSameTimeCount >= 3) {
-                    console.warn(`[Circuit Breaker] 타임스탬프 정지 환각 루프 감지 (${consecutiveSameTimeCount}회) at ${timeStr}. 스트림 중단!`);
-                    hallucinationDetected = true;
-                    break;
-                }
-
-                // 짧은 텍스트(5단어 이하)가 흘러가는 시간 속에서 7번 '연속' 잡히면 환각 폭주로 판단 -> 스트림 조기 종료
-                if (consecutiveRepeatCount >= 7 && wordsCount <= 5) {
-                    console.warn(`[Circuit Breaker] 짧은 문장 환각 폭주 감지 (${consecutiveRepeatCount}회 연속, "${content}") at ${timeStr}. 스트림 중단!`);
-                    hallucinationDetected = true;
-                    break;
-                }
-
-                // 기존 서킷 브레이커 로직: 시간+텍스트가 같으면 1개만 남기고 스킵 (중복 방지)
-                if (isSameTime && isSameText) {
                     continue;
                 }
 
@@ -192,12 +164,10 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
                 allMatches.push({ s: timeStr, o: content });
             }
-
-            if (hallucinationDetected) break;
         }
 
         // 마지막 버퍼에 남은 줄 처리
-        if (!hallucinationDetected && fullText.trim()) {
+        if (fullText.trim()) {
             const match = fullText.match(lineRegex);
             if (match) {
                 let content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
@@ -210,7 +180,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             }
         }
 
-        console.log(`[Stage 1] Parsed ${allMatches.length} sentences. Hallucination detected: ${hallucinationDetected}`);
+        console.log(`[Stage 1] Parsed ${allMatches.length} sentences.`);
 
         if (allMatches.length === 0) {
             throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다.`);
