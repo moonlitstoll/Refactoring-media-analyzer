@@ -122,7 +122,6 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         let consecutiveRepeatCount = 0;       // 시간에 관계없이 텍스트만 같은 경우
         let consecutiveSameTimeCount = 0;     // 시간과 텍스트가 모두 동일한 경우
         let hallucinationDetected = false;
-        const globalSentenceCount = new Map();
 
         // ★ 실시간 스트리밍 수신 + 서킷 브레이커
         for await (const chunk of streamResult.stream) {
@@ -148,11 +147,6 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     console.warn(`[Circuit Breaker] 라인 내부 반복 감지 → 라인 무시: "${content.substring(0, 80)}..."`);
                     continue; // 이 줄만 무시하고 계속 진행
                 }
-
-                // ★ 글로벌 문장 카운팅 실시간 추적
-                const sentenceKey = content.toLowerCase();
-                const currentCount = (globalSentenceCount.get(sentenceKey) || 0) + 1;
-                globalSentenceCount.set(sentenceKey, currentCount);
 
                 const currentTime = parseTimeString(timeStr);
                 const isSameText = content === lastText;
@@ -182,20 +176,13 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     break;
                 }
 
-                // 규칙 1: 전체 대본에서 동일 문장이 누적 5회를 초과하면 스킵
-                const shouldDropByGlobalCount = currentCount > 5;
-                // 기존 서킷 브레이커 로직: 시간+텍스트가 같으면 1개만 남기고 스킵
-                const shouldDropBySameTime = (isSameTime && isSameText);
+                // 기존 서킷 브레이커 로직: 시간+텍스트가 같으면 1개만 남기고 스킵 (중복 방지)
+                if (isSameTime && isSameText) {
+                    continue;
+                }
 
                 lastTime = currentTime;
                 lastText = content;
-
-                if (shouldDropByGlobalCount || shouldDropBySameTime) {
-                    if (currentCount === 6 && shouldDropByGlobalCount && !shouldDropBySameTime) {
-                        console.warn(`[Filter] 글로벌 빈도 제한 초과 (5회 넘음) → 무시: "${content}"`);
-                    }
-                    continue; // 중복 텍스트 무시
-                }
 
                 allMatches.push({ s: timeStr, o: content });
             }
