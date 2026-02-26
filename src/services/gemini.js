@@ -15,7 +15,7 @@ const STAGE1_PROMPT = `
 
 **[침묵 및 환각(Hallucination) 엄금]**
 - 실제 대화가 없는 구간은 텍스트를 출력하지 마십시오.
-- **무한 반복 금지**: 동일한 문장을 동일한 타임스탬프 또는 아주 짧은 간격 내에 기계적으로 무한히 반복 출력하는 행위는 치명적인 모델 오류로 간주됩니다. 만약 분석이 어렵다면 반복하지 말고 즉시 전사를 중단하거나 다음으로 넘어가십시오.
+- **무한 반복 및 환각 금지**: 대사가 없는 구간, 잡음, 배경음악 구간을 'Trời ơi'나 짧은 감탄사 같은 텍스트로 임의로 채워 넣지 마십시오. 강제로 반복 생성하는 것을 엄금합니다. 시간이 전진하더라도 똑같은 문장을 습관적으로 반복해서 출력하지 마십시오. 중복 텍스트는 시스템 상에서 차단되므로 억지로 공백을 메우려 하지 마십시오.
 - 공백을 메우기 위해 이전 문장을 반복하는 행위는 절대 금지됩니다.
 `;
 
@@ -119,8 +119,10 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         let allMatches = [];
         let lastTime = -1;
         let lastText = "";
-        let rapidRepeatCount = 0;
+        let consecutiveRepeatCount = 0;       // 시간에 관계없이 텍스트만 같은 경우
+        let consecutiveSameTimeCount = 0;     // 시간과 텍스트가 모두 동일한 경우
         let hallucinationDetected = false;
+        const globalSentenceCount = new Map();
 
         // ★ 실시간 스트리밍 수신 + 서킷 브레이커
         for await (const chunk of streamResult.stream) {
@@ -147,25 +149,54 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     continue; // 이 줄만 무시하고 계속 진행
                 }
 
-                // ★ 서킷 브레이커: 같은 시간 + 같은 텍스트 연속 반복 감지
-                const currentTime = parseTimeString(timeStr);
-                const isSameTime = Math.abs(currentTime - lastTime) < 0.1;
-                const isSameText = content === lastText;
+                // ★ 글로벌 문장 카운팅 실시간 추적
+                const sentenceKey = content.toLowerCase();
+                const currentCount = (globalSentenceCount.get(sentenceKey) || 0) + 1;
+                globalSentenceCount.set(sentenceKey, currentCount);
 
-                if (isSameTime && isSameText) {
-                    rapidRepeatCount++;
-                    if (rapidRepeatCount >= 3) {
-                        console.warn(`[Circuit Breaker] 환각 루프 감지 (${rapidRepeatCount}회) at ${timeStr}. 스트림 중단!`);
-                        hallucinationDetected = true;
-                        break; // ★ 스트림 즉시 중단 → 토큰 절약 + 뒷부분 보존 불가이지만 폭주 방지
-                    }
-                    continue; // ★ 개선 1: 중복은 즉시 버림 (1회만 유지)
+                const currentTime = parseTimeString(timeStr);
+                const isSameText = content === lastText;
+                const isSameTime = Math.abs(currentTime - lastTime) < 0.1;
+                const wordsCount = content.split(/\s+/).length;
+
+                if (isSameText) {
+                    consecutiveRepeatCount++;
+                    if (isSameTime) consecutiveSameTimeCount++;
+                    else consecutiveSameTimeCount = 1;
                 } else {
-                    rapidRepeatCount = 0;
+                    consecutiveRepeatCount = 1;
+                    consecutiveSameTimeCount = 1;
                 }
+
+                // 타임스탬프가 정지된 상태로 3번 연속 반복되면 즉시 중단
+                if (consecutiveSameTimeCount >= 3) {
+                    console.warn(`[Circuit Breaker] 타임스탬프 정지 환각 루프 감지 (${consecutiveSameTimeCount}회) at ${timeStr}. 스트림 중단!`);
+                    hallucinationDetected = true;
+                    break;
+                }
+
+                // 짧은 텍스트(5단어 이하)가 흘러가는 시간 속에서 7번 '연속' 잡히면 환각 폭주로 판단 -> 스트림 조기 종료
+                if (consecutiveRepeatCount >= 7 && wordsCount <= 5) {
+                    console.warn(`[Circuit Breaker] 짧은 문장 환각 폭주 감지 (${consecutiveRepeatCount}회 연속, "${content}") at ${timeStr}. 스트림 중단!`);
+                    hallucinationDetected = true;
+                    break;
+                }
+
+                // 규칙 1: 전체 대본에서 동일 문장이 누적 5회를 초과하면 스킵
+                const shouldDropByGlobalCount = currentCount > 5;
+                // 기존 서킷 브레이커 로직: 시간+텍스트가 같으면 1개만 남기고 스킵
+                const shouldDropBySameTime = (isSameTime && isSameText);
 
                 lastTime = currentTime;
                 lastText = content;
+
+                if (shouldDropByGlobalCount || shouldDropBySameTime) {
+                    if (currentCount === 6 && shouldDropByGlobalCount && !shouldDropBySameTime) {
+                        console.warn(`[Filter] 글로벌 빈도 제한 초과 (5회 넘음) → 무시: "${content}"`);
+                    }
+                    continue; // 중복 텍스트 무시
+                }
+
                 allMatches.push({ s: timeStr, o: content });
             }
 
