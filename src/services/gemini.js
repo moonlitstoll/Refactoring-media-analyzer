@@ -92,61 +92,104 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
-    console.log(`[Stage 1] Global Timeline Sequential Analysis with model: ${modelName} `);
+    console.log(`[Stage 1] Streaming Analysis with Circuit Breaker, model: ${modelName}`);
 
     try {
-        console.log(`[Stage 1] Using inlineData for transcription.`);
         const mediaData = await fileToGenerativePart(file);
 
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                temperature: 0.1 // Lower temperature to minimize hallucination loops
+                temperature: 0.1
             },
             safetySettings
         }, { apiVersion: "v1beta" });
 
-        console.log(`[Stage 1] Analyzing full media...`);
+        console.log(`[Stage 1] Starting Streaming Analysis...`);
 
-        const result = await model.generateContent([
+        // ★ 개선 3: 스트리밍 방식으로 전환 (환각 시 즉시 중단 가능)
+        const streamResult = await model.generateContentStream([
             mediaData,
             STAGE1_PROMPT
         ]);
 
-        const response = await result.response;
+        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*(?:\|\|)?\s*(.+)/;
 
-        if (response.candidates && response.candidates[0].finishReason === 'RECITATION') {
-            console.warn(`[Stage 1] Full analysis blocked due to RECITATION.`);
-            throw new Error("저작권 보호 정책(Recitation)으로 인해 분석이 차단되었습니다. 다른 파일을 시도하거나 나중에 다시 시도해 주세요.");
+        let fullText = "";
+        let allMatches = [];
+        let lastTime = -1;
+        let lastText = "";
+        let rapidRepeatCount = 0;
+        let hallucinationDetected = false;
+
+        // ★ 실시간 스트리밍 수신 + 서킷 브레이커
+        for await (const chunk of streamResult.stream) {
+            const chunkText = chunk.text();
+            if (!chunkText) continue;
+
+            fullText += chunkText;
+
+            // 줄 단위로 분리하여 실시간 처리
+            const lines = fullText.split('\n');
+            fullText = lines.pop() || ""; // 마지막 미완성 줄은 다음 청크와 합침
+
+            for (const line of lines) {
+                const match = line.match(lineRegex);
+                if (!match) continue;
+
+                const timeStr = match[1];
+                const content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
+                if (!content) continue;
+
+                // ★ 개선 2: 라인 내부 반복 감지 (a a a a... 패턴)
+                if (isIntraLineRepetition(content)) {
+                    console.warn(`[Circuit Breaker] 라인 내부 반복 감지 → 라인 무시: "${content.substring(0, 80)}..."`);
+                    continue; // 이 줄만 무시하고 계속 진행
+                }
+
+                // ★ 서킷 브레이커: 같은 시간 + 같은 텍스트 연속 반복 감지
+                const currentTime = parseTimeString(timeStr);
+                const isSameTime = Math.abs(currentTime - lastTime) < 0.1;
+                const isSameText = content === lastText;
+
+                if (isSameTime && isSameText) {
+                    rapidRepeatCount++;
+                    if (rapidRepeatCount >= 3) {
+                        console.warn(`[Circuit Breaker] 환각 루프 감지 (${rapidRepeatCount}회) at ${timeStr}. 스트림 중단!`);
+                        hallucinationDetected = true;
+                        break; // ★ 스트림 즉시 중단 → 토큰 절약 + 뒷부분 보존 불가이지만 폭주 방지
+                    }
+                    continue; // ★ 개선 1: 중복은 즉시 버림 (1회만 유지)
+                } else {
+                    rapidRepeatCount = 0;
+                }
+
+                lastTime = currentTime;
+                lastText = content;
+                allMatches.push({ s: timeStr, o: content });
+            }
+
+            if (hallucinationDetected) break;
         }
 
-        const rawText = response.text();
-        console.log(`[Stage 1] Raw AI Response Length: ${rawText.length}`);
-
-        // Unified Regex for Robust Parsing: supports MM:SS, [MM:SS], etc.
-        // Make the `||` separator optional to prevent dropping data when AI omits it
-        const matches = [...rawText.matchAll(/(?:\[)?(\d{1,2}:?(\d{1,2}:?)?[\d.]+)(?:\])?\s*(?:\|\|)?\s*(.*)/g)];
-
-        // 1. Parsing and Rhythmic Loop Detection
-        const parsedSentences = matches
-            .map(m => ({
-                s: m[1],
-                o: m[3] ? m[3].replace(/^\|\|\s*/, '').trim() : '' // fallback strip if regex grouping gets weird
-            }))
-            .filter(item => item.o.length > 0);
-
-        if (parsedSentences.length === 0) {
-            console.warn(`[Stage 1] No matches found in raw text. First 500 chars:`, rawText.substring(0, 500));
+        // 마지막 버퍼에 남은 줄 처리
+        if (!hallucinationDetected && fullText.trim()) {
+            const match = fullText.match(lineRegex);
+            if (match) {
+                const content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
+                if (content && !isIntraLineRepetition(content)) {
+                    allMatches.push({ s: match[1], o: content });
+                }
+            }
         }
 
-        // 2. 스마트 기계적 루프 필터링 (시간이 흐르지 않는 무한 루프만 정밀 차단)
-        const allSentences = filterMechanicalLoops(parsedSentences);
+        console.log(`[Stage 1] Parsed ${allMatches.length} sentences. Hallucination detected: ${hallucinationDetected}`);
 
-        if (allSentences.length === 0) {
-            throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다. (AI 응답 길이: ${rawText.length})`);
+        if (allMatches.length === 0) {
+            throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다.`);
         }
 
-        return normalizeTimestamps(allSentences);
+        return normalizeTimestamps(allMatches);
     } catch (err) {
         console.error(`Stage 1 Global Timeline Error: `, err);
         throw err;
@@ -272,4 +315,43 @@ function filterMechanicalLoops(items) {
     }
 
     return result;
+}
+
+/**
+ * ★ 개선 2: 단일 라인 내부 반복 감지
+ * "A a a a a a a..." 또는 "tăng tăng tăng tăng..." 같은 환각 패턴을 감지합니다.
+ */
+function isIntraLineRepetition(text) {
+    if (!text || text.length < 50) return false; // 짧은 문장은 무시
+
+    // 1. 텍스트가 비정상적으로 긴 경우 (정상 대사는 보통 200자 이하)
+    if (text.length > 500) return true;
+
+    // 2. 공백으로 분리하여 단어 반복 체크
+    const words = text.split(/\s+/);
+    if (words.length < 6) return false;
+
+    // 앞 3개 단어가 모두 같으면서 전체 단어의 50% 이상이 같은 경우
+    const firstWord = words[0].toLowerCase();
+    const sameCount = words.filter(w => w.toLowerCase() === firstWord).length;
+    if (sameCount >= words.length * 0.5 && sameCount >= 6) {
+        return true;
+    }
+
+    // 3. 한 글자(또는 두 글자) 단어만으로 구성된 긴 문장
+    const shortWordCount = words.filter(w => w.length <= 2).length;
+    if (words.length > 10 && shortWordCount >= words.length * 0.8) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * 시간 문자열을 초 단위 숫자로 변환 (서킷 브레이커에서 사용)
+ */
+function parseTimeString(t) {
+    const parts = String(t).replace(/[\[\]\s]/g, '').split(':');
+    if (parts.length < 2) return 0;
+    return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
 }
