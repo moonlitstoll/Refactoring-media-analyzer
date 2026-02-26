@@ -139,7 +139,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                 if (!match) continue;
 
                 const timeStr = match[1];
-                const content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
+                let content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
                 if (!content) continue;
 
                 // ★ 개선 2: 단일 라인 내부 반복 감지 및 정제 (TRUNCATED / BLOCKED)
@@ -200,9 +200,12 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         if (!hallucinationDetected && fullText.trim()) {
             const match = fullText.match(lineRegex);
             if (match) {
-                const content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
-                if (content && !isIntraLineRepetition(content)) {
-                    allMatches.push({ s: match[1], o: content });
+                let content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
+                if (content) {
+                    const analysisResult = analyzeIntraLineRepetition(content);
+                    if (analysisResult.status !== "BLOCKED") {
+                        allMatches.push({ s: match[1], o: analysisResult.refined_text });
+                    }
                 }
             }
         }
