@@ -142,10 +142,16 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                 const content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
                 if (!content) continue;
 
-                // ★ 개선 2: 라인 내부 반복 감지 (a a a a... 패턴)
-                if (isIntraLineRepetition(content)) {
-                    console.warn(`[Circuit Breaker] 라인 내부 반복 감지 → 라인 무시: "${content.substring(0, 80)}..."`);
-                    continue; // 이 줄만 무시하고 계속 진행
+                // ★ 개선 2: 단일 라인 내부 반복 감지 및 정제 (TRUNCATED / BLOCKED)
+                const analysisResult = analyzeIntraLineRepetition(content);
+
+                if (analysisResult.status === "BLOCKED") {
+                    console.warn(`[Circuit Breaker] 비정상 길이 차단: "${content.substring(0, 50)}..."`);
+                    // 차단 메시지로 대체하여 표시 (시간 흐름 유지를 위해)
+                    content = analysisResult.refined_text;
+                } else if (analysisResult.status === "TRUNCATED") {
+                    console.warn(`[Filter] 반복 축약 적용: "${content.substring(0, 50)}..." -> "${analysisResult.refined_text}"`);
+                    content = analysisResult.refined_text;
                 }
 
                 const currentTime = parseTimeString(timeStr);
@@ -336,33 +342,73 @@ function filterMechanicalLoops(items) {
 }
 
 /**
- * ★ 개선 2: 단일 라인 내부 반복 감지
- * "A a a a a a a..." 또는 "tăng tăng tăng tăng..." 같은 환각 패턴을 감지합니다.
+ * ★ 개선 2: 단일 라인 내부 반복 감지 및 정제 (다국어 지원)
+ * 3단계 규칙에 따라 문장을 PASS, TRUNCATED, BLOCKED로 분류하고 정제된 텍스트를 반환합니다.
  */
-function isIntraLineRepetition(text) {
-    if (!text || text.length < 50) return false; // 짧은 문장은 무시
+function analyzeIntraLineRepetition(text) {
+    if (!text) return { original_text: text, refined_text: text, status: "PASS" };
 
-    // 1. 텍스트가 비정상적으로 긴 경우 (정상 대사는 보통 200자 이하)
-    if (text.length > 500) return true;
+    const detectedLang = detectLanguage(text);
 
-    // 2. 공백으로 분리하여 단어 반복 체크
-    const words = text.split(/\s+/);
-    if (words.length < 6) return false;
+    // 1단계: 비정상적인 길이 차단 (BLOCKED)
+    if (text.length > 500) {
+        let blockedMsg = "[시스템: 비정상적으로 긴 텍스트 차단됨]";
+        if (detectedLang === "vi") blockedMsg = "[Hệ thống: Văn bản quá dài bị chặn]";
+        else if (detectedLang === "en") blockedMsg = "[System: Abnormally long text blocked]";
 
-    // 앞 3개 단어가 모두 같으면서 전체 단어의 50% 이상이 같은 경우
-    const firstWord = words[0].toLowerCase();
-    const sameCount = words.filter(w => w.toLowerCase() === firstWord).length;
-    if (sameCount >= words.length * 0.5 && sameCount >= 6) {
-        return true;
+        return {
+            original_text: text,
+            refined_text: blockedMsg,
+            status: "BLOCKED"
+        };
     }
 
-    // 3. 한 글자(또는 두 글자) 단어만으로 구성된 긴 문장
-    const shortWordCount = words.filter(w => w.length <= 2).length;
-    if (words.length > 10 && shortWordCount >= words.length * 0.8) {
-        return true;
+    // 2단계: 연속된 단어 도배 부분 압축 (TRUNCATED)
+    // 정규식을 사용해 "동일한 단어가 3번 이상 연속"되는 패턴을 찾음
+    // (\S+) : 공백이 아닌 단어 포착
+    // (?:\s+\1){2,} : 그 단어가 공백을 사이에 두고 2번 이상 더 반복되는 구간 (총 3번 이상)
+    const regex = /(\b\S+\b)(?:\s+\1){2,}/gi;
+    let isTruncated = false;
+
+    let refined_text = text.replace(regex, (match, word) => {
+        isTruncated = true;
+        let ellipsis = "... [반복 생략]";
+        if (detectedLang === "vi") ellipsis = "... [lược bỏ lặp lại]";
+        else if (detectedLang === "en") ellipsis = "... [Repetition Omitted]";
+
+        return `${word}${ellipsis}`;
+    });
+
+    if (isTruncated) {
+        return {
+            original_text: text,
+            refined_text: refined_text,
+            status: "TRUNCATED"
+        };
     }
 
-    return false;
+    // 3단계: 정상 텍스트 (PASS)
+    return {
+        original_text: text,
+        refined_text: text,
+        status: "PASS"
+    };
+}
+
+/**
+ * 텍스트의 언어를 대략적으로 판별하는 헬퍼 함수
+ */
+function detectLanguage(text) {
+    // 베트남어 특수 문자 (성조 등)
+    const vietnameseRegex = /[ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠàáâãèéêìíòóôõùúăđĩũơƯĂẠẢẤẦẨẪẬẮẰẲẴẶẸẺẼỀỀỂưăạảấầẩẫậắằẳẵặẹẻẽềềểỄỆỈỊỌỎỐỒỔỖỘỚỜỞỠỢỤỦỨỪễệỉịọỏốồổỗộớờởỡợụủứừỬỮỰỲỴÝỶỸửữựỳỵỷỹ]/;
+    // 한글 특수 문자
+    const koreanRegex = /[ㄱ-ㅎㅏ-ㅣ가-힣]/;
+
+    if (koreanRegex.test(text)) return "ko";
+    if (vietnameseRegex.test(text)) return "vi";
+
+    // 기본적으로 영어나 기타 알파벳
+    return "en";
 }
 
 /**
