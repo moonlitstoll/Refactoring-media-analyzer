@@ -118,7 +118,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         let fullText = "";
         let allMatches = [];
         let lastTime = -1;
-        let lastText = "";
+        let lastSentences = []; // 최근 5줄의 히스토리를 저장하여 교차 중복(A-B-A-B) 방어
 
         // ★ 실시간 스트리밍 수신 + 서킷 브레이커
         for await (const chunk of streamResult.stream) {
@@ -152,15 +152,17 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                 }
 
                 const currentTime = parseTimeString(timeStr);
-                const isSameText = content === lastText;
+                const normalizedContent = content.toLowerCase().trim();
 
-                // 똑같은 내용이 연달아 나오면 시간 전진 여부와 상관없이 대본에 추가하지 않고 무시 (Drop)
-                if (isSameText) {
+                // 최근 5줄 히스토리와 비교하여 중복 대사 제거 (A-B-A-B 패턴 방어)
+                if (lastSentences.some(s => s === normalizedContent)) {
                     continue;
                 }
 
                 lastTime = currentTime;
-                lastText = content;
+                // 히스토리 업데이트 (최대 5줄 유지)
+                lastSentences.push(normalizedContent);
+                if (lastSentences.length > 5) lastSentences.shift();
 
                 allMatches.push({ s: timeStr, o: content });
             }
@@ -337,10 +339,12 @@ function analyzeIntraLineRepetition(text) {
     }
 
     // 2단계: 연속된 단어 도배 부분 압축 (TRUNCATED)
-    // 정규식을 사용해 "동일한 단어가 3번 이상 연속"되는 패턴을 찾음
-    // (\S+) : 공백이 아닌 단어 포착
-    // (?:\s+\1){2,} : 그 단어가 공백을 사이에 두고 2번 이상 더 반복되는 구간 (총 3번 이상)
-    const regex = /(\b\S+\b)(?:\s+\1){2,}/gi;
+    // 유니코드 지원을 위해 \b 대신 공백 및 경계 조건을 활용한 정규식 사용
+    // (?:^|\s) : 시작 또는 공백 뒤의 단어 포착
+    // (\S+) : 반복될 단어 그룹
+    // (?:\s+\1){2,} : 해당 단어가 공백과 함께 2번 이상 더 반복 (총 3번 이상)
+    // (?=\s|$) : 공백 또는 문장의 끝으로 마무리
+    const regex = /(?:^|\s)(\S+)(?:\s+\1){2,}(?=\s|$)/gi;
     let isTruncated = false;
 
     let refined_text = text.replace(regex, (match, word) => {
@@ -349,8 +353,9 @@ function analyzeIntraLineRepetition(text) {
         if (detectedLang === "vi") ellipsis = "... [lược bỏ lặp lại]";
         else if (detectedLang === "en") ellipsis = "... [Repetition Omitted]";
 
-        return `${word}${ellipsis}`;
-    });
+        // 정규식 그룹에 따라 앞에 공백이 포함될 수 있으므로 trim 및 적절한 포맷팅
+        return ` ${word.trim()}${ellipsis}`;
+    }).trim();
 
     if (isTruncated) {
         return {
