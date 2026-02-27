@@ -17,6 +17,7 @@ const STAGE1_PROMPT = `
 - 실제 대화가 없는 구간은 텍스트를 출력하지 마십시오.
 - **무한 반복 및 환각 금지**: 대사가 없는 구간, 잡음, 배경음악 구간을 'Trời ơi'나 짧은 감탄사 같은 텍스트로 임의로 채워 넣지 마십시오. 강제로 반복 생성하는 것을 엄금합니다. 시간이 전진하더라도 똑같은 문장을 습관적으로 반복해서 출력하지 마십시오. 중복 텍스트는 시스템 상에서 차단되므로 억지로 공백을 메우려 하지 마십시오.
 - 공백을 메우기 위해 이전 문장을 반복하는 행위는 절대 금지됩니다.
+- **짧고 반복되는 감탄사(예: 'Anh ơi', 'Trời ơi' 등)가 서로 다른 시간대에 여러 번 등장하더라도 맨 앞의 첫 번째 감탄사만 전사하고, 이후 연속되는 동일한 감탄사부터는 완전히 무시(출력 생략)하십시오.**
 `;
 
 const STAGE2_PROMPT = `
@@ -119,6 +120,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         let allMatches = [];
         let lastTime = -1;
         let lastSentences = []; // 최근 5줄의 히스토리를 저장하여 교차 중복(A-B-A-B) 방어
+        const historyCache = new Map(); // 단기 기억 캐시 (10초 이내 반복 차단 용도)
 
         // ★ 실시간 스트리밍 수신 + 서킷 브레이커
         for await (const chunk of streamResult.stream) {
@@ -153,6 +155,18 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
                 const currentTime = parseTimeString(timeStr);
                 const normalizedContent = content.toLowerCase().trim();
+
+                // ★ 단기 기억(History Cache) 필터링: 맨 앞 문장만 남기고 뒤 문장은 5초 이내 반복 시 무시
+                if (normalizedContent.length <= 50) {
+                    if (historyCache.has(normalizedContent)) {
+                        const lastSeenTime = historyCache.get(normalizedContent);
+                        if (currentTime - lastSeenTime < 5.0) {
+                            console.warn(`[Filter] 단기 반복 문장 (5초 이내), 드롭 처리: "${content}"`);
+                            continue;
+                        }
+                    }
+                    historyCache.set(normalizedContent, currentTime);
+                }
 
                 // 최근 5줄 히스토리와 비교하여 중복 대사 제거 (A-B-A-B 패턴 방어)
                 if (lastSentences.some(s => s === normalizedContent)) {
