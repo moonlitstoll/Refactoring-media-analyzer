@@ -340,7 +340,7 @@ function analyzeIntraLineRepetition(text) {
     const detectedLang = detectLanguage(text);
 
     // 1단계: 비정상적인 길이 차단 (BLOCKED)
-    if (text.length > 500) {
+    if (text.length > 2000) {
         let blockedMsg = "[시스템: 비정상적으로 긴 텍스트 차단됨]";
         if (detectedLang === "vi") blockedMsg = "[Hệ thống: Văn bản quá dài bị chặn]";
         else if (detectedLang === "en") blockedMsg = "[System: Abnormally long text blocked]";
