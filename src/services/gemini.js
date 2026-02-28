@@ -134,7 +134,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         }, { apiVersion: "v1beta" });
 
         const streamResult = await model.generateContentStream([mediaData, STAGE1_PROMPT]);
-        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*\|\|\s*(.+)/;
+        // 구분자(||)가 없거나 포맷이 약간 틀려도 타임라인 정보를 최대한 추출하도록 유연하게 수정
+        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*(?:\|\|)?\s*(.+)/;
 
         let fullText = "";
         let allMatches = [];
@@ -196,7 +197,10 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             }
         }
 
-        if (allMatches.length === 0) throw new Error("No data found.");
+        if (allMatches.length === 0) {
+            console.error("[Stage 1] Analysis failed. AI Raw Output Sample:", fullText.substring(0, 500));
+            throw new Error("API Error (Stage 1): No data found. (Check console for raw output)");
+        }
         return normalizeTimestamps(allMatches);
     } catch (err) {
         console.error(`Stage 1 Error: `, err);
