@@ -130,7 +130,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         }, { apiVersion: "v1beta" });
 
         const streamResult = await model.generateContentStream([mediaData, STAGE1_PROMPT]);
-        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*(?:\|\|)?\s*(.+)/;
+        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*\|\|\s*(.+)/;
 
         let fullText = "";
         let allMatches = [];
