@@ -27,7 +27,6 @@ const STAGE2_PROMPT = `
 주어진 문장을 한국어로 번역하고, 모바일 가독성을 최우선으로 하여 아래 **[7대 분석 규칙]**에 따라 상세 분석하십시오.
 
 **[7대 분석 규칙]**
-**[7대 분석 규칙]**
 1. **의미 단위(Chunk-centric) 통합 분석 (최우선)**: 단어를 개별적으로 나열하지 마십시오. 반드시 의미가 형성되는 최소 단위인 '청크(Chunk)'(예: 주어+동사, 동사+목적어, 부사+동사 등)를 분석의 기본 단위로 삼으십시오.
 2. **청크 내 전수 분석 (중복 재분석 금지)**: 하나의 청크로 묶인 내부의 모든 단어를 상세히 풀이하십시오. **단, 이미 청크에 포함되어 설명된 단어나 구절은 절대로 하단에 독립된 행으로 다시 출력하지 마십시오.** (중복 행 생성 금지)
 3. **반복 설명 허용**: 이전 문장에서 나온 단어라도 현재 문장에서 쓰였다면 생략하지 말고 다시 설명하십시오.
@@ -51,6 +50,31 @@ const STAGE2_PROMPT = `
 **[주의 사항]**
 1. 모든 분석 내용은 반드시 한 줄에 하나씩 [분석] 마커로 시작하십시오.
 2. JSON 기호를 절대 사용하지 마십시오. 오직 텍스트로만 답변하십시오.
+`;
+
+const STAGE2_BATCH_PROMPT = `
+당신은 베트남어-한국어 전문 번역가이자 언어 분석가입니다. 
+여러 개의 문장을 한 번에 분석해야 합니다. 각 문장별로 아래 **[7대 분석 규칙]**을 엄격히 준수하여 답변하십시오.
+
+**[7대 분석 규칙]**
+1. **의미 단위(Chunk-centric) 통합 분석**: 단어를 개별적으로 나열하지 말고 '청크' 단위로 분석하십시오.
+2. **청크 내 전수 분석**: 하나의 청크 내 모든 단어를 상세히 풀이하되 중복 행을 생성하지 마십시오.
+3. **반복 설명 허용**: 이전 문장에서 나온 단어도 다시 설명하십시오.
+4. **계층적 한 줄 분석**: 청크 전체 뜻 뒤에 괄호'()'와 '+'를 사용하여 개별 단어 뜻을 포함하십시오.
+5. **한자어 노이즈 제거**: 순수 한국어 뜻만 간결하게 표기하십시오.
+6. **문법 패턴 통합 필축**: 상관 접속사 패턴은 최우선적으로 묶어 **굵게(Bold)** 표시하십시오.
+7. **초단축 미니멀리즘**: 서술형을 배제하고 핵심 키워드 위주로 짧게 표기하십시오.
+
+**[중요: 배칭 출력 형식]**
+각 문장의 시작과 끝에 아래와 같은 명확한 인덱스 마커를 사용하십시오.
+--- [INDEX: 번호] START ---
+[번역] 번역된 한국어 문장
+[분석] 분석 내용...
+--- [INDEX: 번호] END ---
+
+**[주의 사항]**
+- 입력된 모든 문장을 순서대로 빠짐없이 분석하십시오.
+- JSON 답변은 절대 금지하며, 오직 지정된 텍스트 마커 형식만 사용하십시오.
 `;
 
 const getModels = (modelId) => {
@@ -165,6 +189,61 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     } catch (err) {
         console.error(`Stage 1 Error: `, err);
         throw err;
+    }
+}
+
+/**
+ * [Stage 2] 여러 문장 일괄 분석 (Batch)
+ */
+export async function analyzeBatchSentences(items, apiKey, modelId, signal) {
+    if (!apiKey) throw new Error("API Key is required");
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+        model: modelId || "gemini-2.0-flash",
+        generationConfig: { temperature: 0.3 },
+        safetySettings
+    });
+
+    const inputContent = items.map(item => `문장 (INDEX: ${item.index}): ${item.text}`).join('\n');
+    const prompt = `${STAGE2_BATCH_PROMPT}\n\n분석할 문장 목록:\n${inputContent}`;
+
+    try {
+        const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+        }, { signal });
+
+        const response = await result.response;
+        const text = response.text();
+
+        // 인덱스 마커별로 쪼개기
+        const results = [];
+        for (const item of items) {
+            const startMarker = `--- [INDEX: ${item.index}] START ---`;
+            const endMarker = `--- [INDEX: ${item.index}] END ---`;
+
+            const startIndex = text.indexOf(startMarker);
+            const endIndex = text.indexOf(endMarker);
+
+            if (startIndex !== -1 && endIndex !== -1) {
+                const subText = text.substring(startIndex + startMarker.length, endIndex);
+                const translationMatch = subText.match(/\[번역\]\s*(.*)/);
+                const analysisLines = [...subText.matchAll(/\[분석\]\s*(.*)/g)].map(m => m[1]);
+
+                results.push({
+                    index: item.index,
+                    translation: translationMatch ? translationMatch[1].trim() : "",
+                    analysis: analysisLines.join("\n").trim()
+                });
+            } else {
+                console.warn(`[Stage 2] Could not find markers for index ${item.index}`);
+                results.push({ index: item.index, translation: "", analysis: "", failed: true });
+            }
+        }
+        return results;
+    } catch (error) {
+        if (error.name === 'AbortError') throw error;
+        console.error(`[Stage 2] Batch analysis failed:`, error);
+        return items.map(item => ({ index: item.index, failed: true }));
     }
 }
 

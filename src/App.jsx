@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronUp, FileAudio, FileVideo, Plus, Trash2,
   SkipBack, SkipForward, Clock, History, MoreVertical, XCircle, Home
 } from 'lucide-react';
-import { extractTranscript, analyzeSingleSentence } from './services/gemini';
+import { extractTranscript, analyzeSingleSentence, analyzeBatchSentences } from './services/gemini';
 import { mediaStore } from './utils/MediaStore';
 
 // Helper: Get Media Duration
@@ -908,12 +908,12 @@ const App = () => {
   };
 
   /**
-   * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (Batched)
-   * Process sentences in batches of 50, running 2 batches simultaneously to balance
-   * speed and Gemini API rate limits while keeping JSON truncation risk low.
+   * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (20x2 Batch)
+   * Process sentences in batches of 20, running 2 batches simultaneously (Total 40 sentences)
+   * to maximize speed while preventing JSON truncation or quality loss.
    */
   const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting Atomic Parallel Analysis for file ${fileId}...`);
+    console.log(`[Stage 2] Starting 20x2 Batch Parallel Analysis for file ${fileId}...`);
 
     // 취소 컨트롤러 초기화
     if (stage2AbortRef.current) stage2AbortRef.current.abort();
@@ -932,36 +932,47 @@ const App = () => {
 
     if (pendingIndices.length === 0) return;
 
-    // 동시 실행 제한 (Rate Limit 고려하여 최대 10개 병렬)
-    const CONCURRENCY_LIMIT = 10;
+    // 20x2 배치 전략
+    const BATCH_SIZE = 20;
+    const CONCURRENCY_LIMIT = 2;
 
-    for (let i = 0; i < pendingIndices.length; i += CONCURRENCY_LIMIT) {
+    for (let i = 0; i < pendingIndices.length; i += (BATCH_SIZE * CONCURRENCY_LIMIT)) {
       if (signal.aborted) break;
 
-      const chunk = pendingIndices.slice(i, i + CONCURRENCY_LIMIT);
-      const chunkPromises = chunk.map(async (globalIdx) => {
-        try {
-          const result = await analyzeSingleSentence(workingData[globalIdx], globalIdx, apiKey, modelId, signal);
+      const batchGroupIndices = pendingIndices.slice(i, i + (BATCH_SIZE * CONCURRENCY_LIMIT));
 
-          if (result && result.translation && !signal.aborted) {
-            workingData[globalIdx] = {
-              ...workingData[globalIdx],
-              translation: result.translation,
-              analysis: result.analysis,
-              isAnalyzed: true
-            };
-            return true;
-          }
+      // 묶음 나누기
+      const chunks = [];
+      for (let j = 0; j < batchGroupIndices.length; j += BATCH_SIZE) {
+        chunks.push(batchGroupIndices.slice(j, j + BATCH_SIZE));
+      }
+
+      const chunkPromises = chunks.map(async (chunk) => {
+        const batchItems = chunk.map(idx => ({ index: idx, text: workingData[idx].text }));
+        try {
+          const results = await analyzeBatchSentences(batchItems, apiKey, modelId, signal);
+
+          results.forEach(res => {
+            if (res && res.translation && !res.failed) {
+              workingData[res.index] = {
+                ...workingData[res.index],
+                translation: res.translation,
+                analysis: res.analysis,
+                isAnalyzed: true
+              };
+            }
+          });
+          return true;
         } catch (err) {
           if (err.name === 'AbortError') return false;
-          console.error(`[Stage 2] Failed sentence ${globalIdx}:`, err);
+          console.error(`[Stage 2] Batch failed:`, err);
+          return false;
         }
-        return false;
       });
 
-      const results = await Promise.all(chunkPromises);
+      const batchSummaryResults = await Promise.all(chunkPromises);
 
-      if (results.some(r => r) && !signal.aborted) {
+      if (batchSummaryResults.some(r => r) && !signal.aborted) {
         updateGlobalState(workingData);
 
         // 중간 저장
@@ -983,8 +994,8 @@ const App = () => {
       }
 
       // API 부하 방지를 위한 미세 지연
-      if (!signal.aborted && i + CONCURRENCY_LIMIT < pendingIndices.length) {
-        await new Promise(r => setTimeout(r, 500));
+      if (!signal.aborted && i + (BATCH_SIZE * CONCURRENCY_LIMIT) < pendingIndices.length) {
+        await new Promise(r => setTimeout(r, 800));
       }
     }
 
