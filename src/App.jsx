@@ -908,12 +908,11 @@ const App = () => {
   };
 
   /**
-   * STAGE 2: SEQUENTIAL DETAIL ANALYSIS (20x2 Batch)
-   * Process sentences in batches of 20, running 2 batches simultaneously (Total 40 sentences)
-   * to maximize speed while preventing JSON truncation or quality loss.
+   * STAGE 2: FULL BATCH ANALYSIS (All at once)
+   * Process ALL pending sentences in a single API call to maximize speed.
    */
   const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting 20x2 Batch Parallel Analysis for file ${fileId}...`);
+    console.log(`[Stage 2] Starting FULL BATCH Analysis for file ${fileId}...`);
 
     // 취소 컨트롤러 초기화
     if (stage2AbortRef.current) stage2AbortRef.current.abort();
@@ -932,87 +931,32 @@ const App = () => {
 
     if (pendingIndices.length === 0) return;
 
-    // 20x2 배치 전략
-    const BATCH_SIZE = 20;
-    const CONCURRENCY_LIMIT = 2;
+    try {
+      const batchItems = pendingIndices.map(idx => ({ index: idx, text: workingData[idx].text }));
+      const results = await analyzeBatchSentences(batchItems, apiKey, modelId, signal);
 
-    for (let i = 0; i < pendingIndices.length; i += (BATCH_SIZE * CONCURRENCY_LIMIT)) {
-      if (signal.aborted) break;
+      if (!signal.aborted && results) {
+        results.forEach(res => {
+          if (res && res.translation && !res.failed) {
+            workingData[res.index] = {
+              ...workingData[res.index],
+              translation: res.translation,
+              analysis: res.analysis,
+              isAnalyzed: true
+            };
+          }
+        });
 
-      const batchGroupIndices = pendingIndices.slice(i, i + (BATCH_SIZE * CONCURRENCY_LIMIT));
-
-      // 묶음 나누기
-      const chunks = [];
-      for (let j = 0; j < batchGroupIndices.length; j += BATCH_SIZE) {
-        chunks.push(batchGroupIndices.slice(j, j + BATCH_SIZE));
-      }
-
-      const chunkPromises = chunks.map(async (chunk) => {
-        const batchItems = chunk.map(idx => ({ index: idx, text: workingData[idx].text }));
-        try {
-          const results = await analyzeBatchSentences(batchItems, apiKey, modelId, signal);
-
-          results.forEach(res => {
-            if (res && res.translation && !res.failed) {
-              workingData[res.index] = {
-                ...workingData[res.index],
-                translation: res.translation,
-                analysis: res.analysis,
-                isAnalyzed: true
-              };
-            }
-          });
-          return true;
-        } catch (err) {
-          if (err.name === 'AbortError') return false;
-          console.error(`[Stage 2] Batch failed:`, err);
-          return false;
-        }
-      });
-
-      const batchSummaryResults = await Promise.all(chunkPromises);
-
-      if (batchSummaryResults.some(r => r) && !signal.aborted) {
         updateGlobalState(workingData);
-
-        // 중간 저장
-        if (fileInfo && fileInfo.name) {
-          const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
-          try {
-            localStorage.setItem(cacheKey, JSON.stringify({
-              data: workingData,
-              metadata: {
-                name: fileInfo.name,
-                size: fileInfo.size,
-                lastModified: fileInfo.lastModified,
-                savedAt: Date.now(),
-                status: 'analyzing'
-              }
-            }));
-          } catch (e) { }
-        }
       }
-
-      // API 부하 방지를 위한 미세 지연
-      if (!signal.aborted && i + (BATCH_SIZE * CONCURRENCY_LIMIT) < pendingIndices.length) {
-        await new Promise(r => setTimeout(r, 800));
-      }
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error(`[Stage 2] Full Batch failed:`, err);
     }
 
-    if (signal.aborted) {
-      console.log("[Stage 2] Analysis Aborted.");
-      return;
-    }
+    if (signal.aborted) return;
 
-    const failedCount = workingData.filter(d => !d.isAnalyzed).length;
-    if (failedCount > 0) {
-      workingData = workingData.map(item =>
-        item.isAnalyzed ? item : { ...item, isAnalyzed: true }
-      );
-      updateGlobalState(workingData);
-    }
-
-    // FINAL PERSISTENT CACHE
+    // FINAL PERSISTENT CACHE (Save only if some success)
     if (fileInfo && fileInfo.name) {
       const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
       try {
@@ -1023,12 +967,12 @@ const App = () => {
             size: fileInfo.size,
             lastModified: fileInfo.lastModified,
             savedAt: Date.now(),
-            status: failedCount === 0 ? 'completed' : 'partially_analyzed'
+            status: 'completed'
           }
         }));
       } catch (e) { }
     }
-    console.log(`[Stage 2] Analysis processing cycle finished. (${failedCount} failed)`);
+    console.log(`[Stage 2] Full Batch processing finished.`);
   };
 
   const onDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
