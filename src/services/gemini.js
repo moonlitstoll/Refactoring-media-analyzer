@@ -21,25 +21,28 @@ const STAGE1_PROMPT = `
 `;
 
 const STAGE2_PROMPT = `
-너는 베트남어와 영어 전문 학습 조력자야. 모든 분석은 모바일 가독성을 최우선으로 하며, 아래 7가지 규칙을 엄격히 준수해.
+당신은 베트남어-한국어 전문 번역가이자 언어 분석가입니다. 
+주어진 문장을 한국어로 번역하고, 주요 문법이나 단어를 상세히 분석하십시오.
 
-**[7대 분석 규칙]**
-1. 청크 우선 분석: 문장을 기계적으로 쪼개지 말고, 의미가 연결되는 덩어리(Chunk) 단위로 먼저 나누어 보여줘.
-2. 전수 및 순차 분석: 각 청크 아래에서 모든 단어를 등장 순서대로 하나도 빠짐없이 분석해.
-너 이제 내 손을 잡지 않잖아.
----
-**Thì em đâu có nắm tay anh nữa đâu.** (너 이제 내 손을 잡지 않잖아.)
-Thì: 그래서, 그러면
-em: 너, 당신
-**đâu có ... đâu**: (패턴) 전혀 ~하지 않다, 결코 ~하지 않다
-[END]
+**[응답 형식 - PlainText Marker]**
+반드시 아래와 같은 구조로 응답하십시오. JSON( {}, [] )을 절대 사용하지 마십시오.
+
+문장번호: [번호] 시작
+[번역] 한국어 번역 내용
+[분석] 상세 분석 내용 (문법/단어 등)
+[분석] 상세 분석 내용 (줄바꿈이 필요한 경우 여러 줄 사용 가능)
+문장번호: [번호] 끝
+
+**[주의 사항]**
+1. JSON 기호를 절대 사용하지 마십시오. 오직 텍스트로만 답변하십시오.
+2. 각 줄은 반드시 [번역], [분석] 등의 마커로 시작하십시오.
+3. 분석 내용이 여러 줄인 경우, 각 줄마다 [분석] 마커를 붙이십시오.
 `;
 
 const getModels = (modelId) => {
     const validModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
     return [modelId].filter(m => validModels.includes(m));
 };
-
 
 async function fileToGenerativePart(file) {
     return new Promise((resolve, reject) => {
@@ -74,41 +77,27 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
     try {
         const mediaData = await fileToGenerativePart(file);
-
         const model = genAI.getGenerativeModel({
             model: modelName,
-            generationConfig: {
-                temperature: 0.1
-            },
+            generationConfig: { temperature: 0.1 },
             safetySettings
         }, { apiVersion: "v1beta" });
 
-        console.log(`[Stage 1] Starting Streaming Analysis...`);
-
-        // ★ 개선 3: 스트리밍 방식으로 전환 (환각 시 즉시 중단 가능)
-        const streamResult = await model.generateContentStream([
-            mediaData,
-            STAGE1_PROMPT
-        ]);
-
+        const streamResult = await model.generateContentStream([mediaData, STAGE1_PROMPT]);
         const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*(?:\|\|)?\s*(.+)/;
 
         let fullText = "";
         let allMatches = [];
-        let lastTime = -1;
-        let lastSentences = []; // 최근 5줄의 히스토리를 저장하여 교차 중복(A-B-A-B) 방어
-        const historyCache = new Map(); // 단기 기억 캐시 (10초 이내 반복 차단 용도)
+        let lastSentences = [];
+        const historyCache = new Map();
 
-        // ★ 실시간 스트리밍 수신 + 서킷 브레이커
         for await (const chunk of streamResult.stream) {
             const chunkText = chunk.text();
             if (!chunkText) continue;
-
             fullText += chunkText;
 
-            // 줄 단위로 분리하여 실시간 처리
             const lines = fullText.split('\n');
-            fullText = lines.pop() || ""; // 마지막 미완성 줄은 다음 청크와 합침
+            fullText = lines.pop() || "";
 
             for (const line of lines) {
                 const match = line.match(lineRegex);
@@ -118,40 +107,25 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                 let content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
                 if (!content) continue;
 
-                // ★ 개선 2: 단일 라인 내부 반복 감지 및 정제 (TRUNCATED / BLOCKED)
                 const analysisResult = analyzeIntraLineRepetition(content);
-
                 if (analysisResult.status === "BLOCKED") {
-                    console.warn(`[Circuit Breaker] 비정상 길이 차단: "${content.substring(0, 50)}..."`);
-                    // 차단 메시지로 대체하여 표시 (시간 흐름 유지를 위해)
                     content = analysisResult.refined_text;
                 } else if (analysisResult.status === "TRUNCATED") {
-                    console.warn(`[Filter] 반복 축약 적용: "${content.substring(0, 50)}..." -> "${analysisResult.refined_text}"`);
                     content = analysisResult.refined_text;
                 }
 
                 const currentTime = parseTimeString(timeStr);
                 const normalizedContent = content.toLowerCase().trim();
 
-                // ★ 단기 기억(History Cache) 필터링: 맨 앞 문장만 남기고 뒤 문장은 5초 이내 반복 시 무시
                 if (normalizedContent.length <= 50) {
                     if (historyCache.has(normalizedContent)) {
                         const lastSeenTime = historyCache.get(normalizedContent);
-                        if (currentTime - lastSeenTime < 5.0) {
-                            console.warn(`[Filter] 단기 반복 문장 (5초 이내), 드롭 처리: "${content}"`);
-                            continue;
-                        }
+                        if (currentTime - lastSeenTime < 5.0) continue;
                     }
                     historyCache.set(normalizedContent, currentTime);
                 }
 
-                // 최근 5줄 히스토리와 비교하여 중복 대사 제거 (A-B-A-B 패턴 방어)
-                if (lastSentences.some(s => s === normalizedContent)) {
-                    continue;
-                }
-
-                lastTime = currentTime;
-                // 히스토리 업데이트 (최대 5줄 유지)
+                if (lastSentences.some(s => s === normalizedContent)) continue;
                 lastSentences.push(normalizedContent);
                 if (lastSentences.length > 5) lastSentences.shift();
 
@@ -159,7 +133,6 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             }
         }
 
-        // 마지막 버퍼에 남은 줄 처리
         if (fullText.trim()) {
             const match = fullText.match(lineRegex);
             if (match) {
@@ -173,91 +146,51 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             }
         }
 
-        console.log(`[Stage 1] Parsed ${allMatches.length} sentences.`);
-
-        if (allMatches.length === 0) {
-            throw new Error(`분석 결과에서 데이터를 찾을 수 없습니다.`);
-        }
-
+        if (allMatches.length === 0) throw new Error("No data found.");
         return normalizeTimestamps(allMatches);
     } catch (err) {
-        console.error(`Stage 1 Global Timeline Error: `, err);
+        console.error(`Stage 1 Error: `, err);
         throw err;
     }
 }
 
-export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-flash") {
-    if (!apiKey || !sentences?.length) return [];
+/**
+ * [Stage 2] 단일 문장 정밀 분석
+ * 텍스트 마커를 사용하여 파싱 에러를 방지합니다.
+ */
+export async function analyzeSingleSentence(item, index, apiKey, modelId, signal) {
+    if (!apiKey) throw new Error("API Key is required");
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-        model: getModels(modelId)[0] || "gemini-2.0-flash",
-        generationConfig: {
-            maxOutputTokens: 8192,
-            temperature: 0.1
-        },
+        model: modelId || "gemini-2.0-flash",
+        generationConfig: { maxOutputTokens: 2048, temperature: 0.2 },
         safetySettings
-    }, { apiVersion: "v1beta" });
+    });
+
+    const prompt = `${STAGE2_PROMPT}\n\n분석할 문장 (번호: ${index}):\n${item.text}`;
 
     try {
-        const result = await model.generateContent([
-            STAGE2_PROMPT,
-            `분석 대상 (번호와 대사): \n${sentences.map((s, i) => `${i}: ${s.o}`).join('\n')} `
-        ]);
-        const text = await result.response.text();
+        const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+        }, { signal });
 
-        // [New] Tag-based Parsing Logic (Robust against truncation)
-        const items = [];
-        const recordRegex = /###\[(\d+)\]###\s*([\s\S]*?)(?=\n###\[\d+\]###|\[END\]|$)/g;
+        const response = await result.response;
+        const text = response.text();
 
-        let match;
-        while ((match = recordRegex.exec(text)) !== null) {
-            const index = parseInt(match[1]);
-            const content = match[2].trim();
+        // 텍스트 마커 파싱 ([번역], [분석])
+        const translationMatch = text.match(/\[번역\]\s*(.*)/);
+        const analysisLines = [...text.matchAll(/\[분석\]\s*(.*)/g)].map(m => m[1]);
 
-            // 번역과 상세 분석 분리 (--- 구분자 기준)
-            const parts = content.split('---');
-            const translation = parts[0] ? parts[0].trim() : "";
-            const analysis = parts[1] ? parts[1].trim() : "";
-
-            if (translation || analysis) {
-                items.push([index, translation, analysis]);
-            }
-        }
-
-        if (items.length === 0) {
-            console.warn("[Stage 2] No tags found in response, trying JSON fallback...");
-            try {
-                const start = text.indexOf('[');
-                const end = text.lastIndexOf(']');
-                if (start !== -1 && end > start) {
-                    const jsonStr = text.substring(start, end + 1);
-                    const parsed = JSON.parse(jsonStr);
-                    if (Array.isArray(parsed)) {
-                        parsed.forEach(row => {
-                            if (Array.isArray(row)) items.push(row);
-                            else if (row && typeof row === 'object') {
-                                items.push([row.number ?? row.id ?? 0, row.korean_translation ?? row.translation ?? "", row.analysis ?? row.detailed_analysis ?? ""]);
-                            }
-                        });
-                    }
-                }
-            } catch (e) {
-                console.warn("[Stage 2] JSON Fallback also failed.");
-            }
-        }
-
-        if (items.length === 0) {
-            console.error("[Stage 2] All parsing failed. Raw response:", text.substring(0, 200));
-        } else {
-            console.log(`[Stage 2] Parsed ${items.length} records.`);
-        }
-
-        return items;
-    } catch (err) {
-        console.error(`[Stage 2] API Call Error:`, err);
-        throw err;
+        return {
+            index,
+            translation: translationMatch ? translationMatch[1].trim() : "",
+            analysis: analysisLines.join("\n").trim()
+        };
+    } catch (error) {
+        if (error.name === 'AbortError') throw error;
+        console.error(`[Stage 2] Failed sentence ${index}:`, error);
+        return null;
     }
-
 }
 
 function normalizeTimestamps(data) {
@@ -266,11 +199,9 @@ function normalizeTimestamps(data) {
         if (s.includes(':')) {
             const parts = s.split(':');
             const mm = parts[0].padStart(2, '0');
-            let ssRaw = parts[1];
-
+            const ssRaw = parts[1];
             const secNum = parseFloat(ssRaw) || 0;
             const formattedSS = secNum.toFixed(2).padStart(5, '0');
-
             s = `${mm}:${formattedSS} `;
         }
         return { ...item, s };
@@ -280,132 +211,35 @@ function normalizeTimestamps(data) {
     });
 }
 
-/**
- * Smart Filter: Detects and collapses mechanical hallucination loops.
- * Protects normal repetitions (e.g., song chorus) by checking timestamps.
- */
-function filterMechanicalLoops(items) {
-    if (items.length < 5) return items;
-
-    const parseTime = t => {
-        const parts = String(t).replace(/[\[\]\s]/g, '').split(':');
-        if (parts.length < 2) return 0;
-        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-    };
-
-    const result = [];
-    let repeatCount = 0;
-
-    for (let i = 0; i < items.length; i++) {
-        const current = items[i];
-        const prev = i > 0 ? items[i - 1] : null;
-
-        if (prev) {
-            const timeDiff = parseTime(current.s) - parseTime(prev.s);
-            const isSameText = current.o === prev.o;
-
-            // SMART DETECTION: 
-            // 1. Same text AND
-            // 2. Time has NOT advanced (less than 0.1s difference)
-            const isStuckLoop = isSameText && Math.abs(timeDiff) < 0.1;
-
-            if (isStuckLoop) {
-                repeatCount++;
-            } else {
-                repeatCount = 0;
-            }
-        } else {
-            repeatCount = 0;
-        }
-
-        // Only block if we've seen the exact same line at the exact same time more than 5 times.
-        // This stops 4000+ line explosions while keeping regular repeats where time moves forward.
-        if (repeatCount < 5) {
-            result.push(current);
-        } else if (repeatCount === 5) {
-            console.warn(`[Filter] AI Hallucination Loop Detected at ${current.s}. Collapsing subsequent repeats.`);
-        }
-    }
-
-    return result;
-}
-
-/**
- * ★ 개선 2: 단일 라인 내부 반복 감지 및 정제 (다국어 지원)
- * 3단계 규칙에 따라 문장을 PASS, TRUNCATED, BLOCKED로 분류하고 정제된 텍스트를 반환합니다.
- */
 function analyzeIntraLineRepetition(text) {
     if (!text) return { original_text: text, refined_text: text, status: "PASS" };
-
     const detectedLang = detectLanguage(text);
-
-    // 1단계: 비정상적인 길이 차단 (BLOCKED)
     if (text.length > 2000) {
         let blockedMsg = "[시스템: 비정상적으로 긴 텍스트 차단됨]";
         if (detectedLang === "vi") blockedMsg = "[Hệ thống: Văn bản quá dài bị chặn]";
         else if (detectedLang === "en") blockedMsg = "[System: Abnormally long text blocked]";
-
-        return {
-            original_text: text,
-            refined_text: blockedMsg,
-            status: "BLOCKED"
-        };
+        return { original_text: text, refined_text: blockedMsg, status: "BLOCKED" };
     }
-
-    // 2단계: 연속된 단어 도배 부분 압축 (TRUNCATED)
-    // 유니코드 지원을 위해 \b 대신 공백 및 경계 조건을 활용한 정규식 사용
-    // (?:^|\s) : 시작 또는 공백 뒤의 단어 포착
-    // (\S+) : 반복될 단어 그룹
-    // (?:\s+\1){2,} : 해당 단어가 공백과 함께 2번 이상 더 반복 (총 3번 이상)
-    // (?=\s|$) : 공백 또는 문장의 끝으로 마무리
     const regex = /(?:^|\s)(\S+)(?:\s+\1){2,}(?=\s|$)/gi;
     let isTruncated = false;
-
     let refined_text = text.replace(regex, (match, word) => {
         isTruncated = true;
         let ellipsis = "... [반복 생략]";
         if (detectedLang === "vi") ellipsis = "... [lược bỏ lặp lại]";
         else if (detectedLang === "en") ellipsis = "... [Repetition Omitted]";
-
-        // 정규식 그룹에 따라 앞에 공백이 포함될 수 있으므로 trim 및 적절한 포맷팅
         return ` ${word.trim()}${ellipsis}`;
     }).trim();
-
-    if (isTruncated) {
-        return {
-            original_text: text,
-            refined_text: refined_text,
-            status: "TRUNCATED"
-        };
-    }
-
-    // 3단계: 정상 텍스트 (PASS)
-    return {
-        original_text: text,
-        refined_text: text,
-        status: "PASS"
-    };
+    return { original_text: text, refined_text: refined_text, status: isTruncated ? "TRUNCATED" : "PASS" };
 }
 
-/**
- * 텍스트의 언어를 대략적으로 판별하는 헬퍼 함수
- */
 function detectLanguage(text) {
-    // 베트남어 특수 문자 (성조 등)
     const vietnameseRegex = /[ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠàáâãèéêìíòóôõùúăđĩũơƯĂẠẢẤẦẨẪẬẮẰẲẴẶẸẺẼỀỀỂưăạảấầẩẫậắằẳẵặẹẻẽềềểỄỆỈỊỌỎỐỒỔỖỘỚỜỞỠỢỤỦỨỪễệỉịọỏốồổỗộớờởỡợụủứừỬỮỰỲỴÝỶỸửữựỳỵỷỹ]/;
-    // 한글 특수 문자
     const koreanRegex = /[ㄱ-ㅎㅏ-ㅣ가-힣]/;
-
     if (koreanRegex.test(text)) return "ko";
     if (vietnameseRegex.test(text)) return "vi";
-
-    // 기본적으로 영어나 기타 알파벳
     return "en";
 }
 
-/**
- * 시간 문자열을 초 단위 숫자로 변환 (서킷 브레이커에서 사용)
- */
 function parseTimeString(t) {
     const parts = String(t).replace(/[\[\]\s]/g, '').split(':');
     if (parts.length < 2) return 0;
