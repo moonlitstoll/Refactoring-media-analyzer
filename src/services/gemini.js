@@ -24,58 +24,46 @@ const STAGE1_PROMPT = `
 
 const STAGE2_PROMPT = `
 당신은 베트남어-영어-한국어 전문 번역가이자 언어 분석가입니다. 
-주어진 문장을 한국어로 번역하고, 모바일 가독성을 최우선으로 하여 아래 **[상세 분석 규칙]**에 따라 상세히 풀이하십시오.
+주어진 문장을 한국어로 번역하고, 모바일 가독성을 위해 아래 **[상세 분석 규칙]**에 따라 순수 텍스트 형식으로 풀이하십시오.
 
 **[상세 분석 규칙]**
-1. **의미 단위(Chunk-centric) 분할**: 문장을 문법적/의미적 덩어리(청크)로 나누어 분석하십시오.
-2. **패턴/기능어 우선 설명**: 조건('Nếu...thì'), 양보('Even though'), 미래('sẽ'), 부정('không') 등 문법 패턴이나 중요 기능어를 독립된 분석행으로 먼저 설명하십시오.
-3. **계층적 상세 풀이**: 청크 전체 뜻을 먼저 쓰고, 그 뒤에 구성 단어들의 뜻을 괄호'()'와 '+'를 사용하여 같은 줄에 포함하십시오.
-   - 형식: [분석] 베트남어/영어 청크: 한국어 전체 뜻 (단어: 뜻 + 단어: 뜻)
-4. **한자어 노이즈 제거**: 순수 한국어 뜻만 간결하게 제공하십시오.
-5. **초단축 미니멀리즘**: 서술형을 배제하고 핵심 뜻과 기능 키워드만 단어 위주로 짧게 표기하십시오.
+1. **순수 형식 지향**: 각 줄의 시작에 "청크:", "[분석]", "•", "-" 등 어떠한 레이블이나 기호도 붙이지 마십시오.
+2. **원측 형식 고수**: 무조건 **"원어 청크: 한국어 전체 뜻 (단어별 상세 풀이)"** 형식만 사용하십시오.
+   - 예: Nếu... thì: 만약 ~하면 ~하다 (조건/패턴)
+   - 예: chuẩn bị cẩn thận: 신중히 준비하다 (chuẩn bị: 준비 + cẩn thận: 신중히)
+3. **계층적 상세 풀이**: 청크 전체 뜻 뒤에 구성 단어들의 뜻을 괄호'()'와 '+'를 사용하여 상세히 포함하십시오.
+4. **미니멀리즘**: 서술형을 배제하고 핵심 뜻과 기능 키워드만 단어 위주로 짧게 표기하십시오.
 
 **[출력 형식]**
 [번역] 번역된 한국어 문장
-[분석] 청크: 한국어 전체 뜻 (단어: 뜻 + 단어: 뜻)
+원어 청크: 한국어 전체 뜻 (단어: 뜻 + 단어: 뜻)
 
 **[작성 예시 - 베트남어]**
 문장: "Nếu chúng ta không chuẩn bị cẩn thận thì sẽ gặp rất nhiều khó khăn trong tương lai."
 [번역] 만약 우리가 신중하게 준비하지 않으면 미래에 매우 많은 어려움을 겪을 것이다.
-[분석] Nếu... thì: 만약 ~하면 ~하다 (조건/패턴)
-[분석] chúng ta không: 우리는 ~않다 (chúng ta: 우리 + không: 부정)
-[분석] chuẩn bị cẩn thận: 신중히 준비하다 (chuẩn bị: 준비 + cẩn thận: 신중히)
-[분석] sẽ gặp: 겪을 것이다 (sẽ: 미래 + gặp: 만나다/겪다)
-[분석] rất nhiều khó khăn: 매우 많은 어려움 (rất: 매우 + nhiều: 많은 + khó khăn: 어려움)
-[분석] trong tương lai: 미래에 (trong: ~안에 + tương lai: 미래)
-
-**[작성 예시 - 영어]**
-문장: "Even though the deadline is approaching fast, we must ensure that every single detail is handled with extreme care."
-[번역] 마감 기한이 빠르게 다가오고 있음에도 불구하고, 우리는 모든 세부 사항이 극도로 세심하게 처리되도록 보장해야 합니다.
-[분석] Even though: ~임에도 불구하고 (양보/패턴)
-[분석] the deadline is: 마감 기한이 ~이다 (deadline: 마감일 + is: 현재)
-[분석] approaching fast: 빠르게 다가오다 (approach: 다가가다 + fast: 빨리)
-[분석] we must ensure: 보장해야 한다 (we: 우리 + must: 의무 + ensure: 확실히 하다)
-[분석] every single detail: 모든 세부 사항 (every: 모든 + single: 단 하나의 + detail: 세부사항)
-[분석] is handled: 처리되다 (is: 상태 + handled: 다뤄지다/수동)
-[분석] with extreme care: 극도로 세심하게 (with: ~와 함께 + extreme: 극도의 + care: 주의)
+Nếu... thì: 만약 ~하면 ~하다 (조건/패턴)
+chúng ta không: 우리는 ~않다 (chúng ta: 우리 + không: 부정)
+chuẩn bị cẩn thận: 신중히 준비하다 (chuẩn bị: 준비 + cẩn thận: 신중히)
+sẽ gặp: 겪을 것이다 (sẽ: 미래 + gặp: 만나다/겪다)
+rất nhiều khó khăn: 매우 많은 어려움 (rất: 매우 + nhiều: 많은 + khó khăn: 어려움)
+trong tương lai: 미래에 (trong: ~안에 + tương lai: 미래)
 `;
 
 const STAGE2_BATCH_PROMPT = `
 당신은 베트남어-영어-한국어 전문 번역가이자 언어 분석가입니다. 
-여러 개의 문장을 한 번에 분석해야 합니다. 각 문장별로 아래 **[상세 분석 규칙]**을 엄격히 준수하여 답변하십시오.
+여러 개의 문장을 일괄 분석합니다. 각 문장에 대해 **[상세 분석 규칙]**을 절대적으로 준수하십시오.
 
 **[상세 분석 규칙]**
-1. **청크 기반 분할 분석**: 문장을 의미 덩어리별로 나누어 상세히 풀이하십시오.
-2. **패턴 및 기능 강조**: 주요 문법 패턴(조건, 양보, 미래, 부정 등)을 최우선적으로 분석행에 포함시키십시오.
-3. **표준 분석 형식**: "[분석] 청크: 전체 뜻 (단어: 뜻 + 단어: 뜻)" 형식을 절대 엄수하십시오.
-4. **미니멀리즘**: 서술형 표현 대신 핵심 키워드와 뜻만 간결하게 표기하십시오.
+1. **레이블 출력 금지**: "청크:", "[분석]", "•", "Analysis:" 등 모든 접두 레이블과 기호를 제거하십시오.
+2. **순수 텍스트 형식**: 무조건 **"원어 청크: 한국어 뜻 (상세 풀이)"** 형식으로만 답하십시오.
+3. **라인 구분용 마커**: 각 줄의 시작에 반드시 [분석] 마커를 붙여주십시오. (이 마커는 시스템에서 자동으로 제거됩니다.)
+   - 형식: [분석] 원어: 뜻 (요소별 상세)
 
 **[중요: 배칭 출력 형식]**
-각 문장의 시작과 끝에 아래와 같은 명확한 인덱스 마커를 사용하십시오.
 --- [INDEX: 번호] START ---
 [번역] 번역된 한국어 문장
-[분석] 청크/패턴: 뜻 (요소별 풀이)
-...
+[분석] 원어/패턴: 뜻 (요소별 상세)
+[분석] 원어/패턴: 뜻 (요소별 상세)
 --- [INDEX: 번호] END ---
 
 **[주의 사항]**
@@ -117,7 +105,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
 
-    console.log(`[Stage 1] Streaming Analysis with Circuit Breaker, model: ${modelName}`);
+    console.log(`[Stage 1] Streaming Analysis with Circuit Breaker, model: ${modelName} `);
 
     try {
         const mediaData = await fileToGenerativePart(file);
@@ -210,8 +198,8 @@ export async function analyzeBatchSentences(items, apiKey, modelId, signal) {
         safetySettings
     });
 
-    const inputContent = items.map(item => `문장 (INDEX: ${item.index}): ${item.text}`).join('\n');
-    const prompt = `${STAGE2_BATCH_PROMPT}\n\n분석할 문장 목록:\n${inputContent}`;
+    const inputContent = items.map(item => `문장(INDEX: ${item.index}): ${item.text} `).join('\n');
+    const prompt = `${STAGE2_BATCH_PROMPT} \n\n분석할 문장 목록: \n${inputContent} `;
 
     try {
         const result = await model.generateContent({
@@ -233,7 +221,8 @@ export async function analyzeBatchSentences(items, apiKey, modelId, signal) {
             if (startIndex !== -1 && endIndex !== -1) {
                 const subText = text.substring(startIndex + startMarker.length, endIndex);
                 const translationMatch = subText.match(/\[번역\]\s*(.*)/);
-                const analysisLines = [...subText.matchAll(/\[분석\]\s*(.*)/g)].map(m => m[1]);
+                const analysisLines = [...subText.matchAll(/\[분석\]\s*(.*)/g)]
+                    .map(m => m[1].replace(/^(청크|Analysis|분석|•|청크:|\[분석\])[:\s\-]*/i, '').trim());
 
                 results.push({
                     index: item.index,
@@ -248,7 +237,7 @@ export async function analyzeBatchSentences(items, apiKey, modelId, signal) {
         return results;
     } catch (error) {
         if (error.name === 'AbortError') throw error;
-        console.error(`[Stage 2] Batch analysis failed:`, error);
+        console.error(`[Stage 2] Batch analysis failed: `, error);
         return items.map(item => ({ index: item.index, failed: true }));
     }
 }
@@ -266,7 +255,7 @@ export async function analyzeSingleSentence(item, index, apiKey, modelId, signal
         safetySettings
     });
 
-    const prompt = `${STAGE2_PROMPT}\n\n분석할 문장 (번호: ${index}):\n${item.text}`;
+    const prompt = `${STAGE2_PROMPT} \n\n분석할 문장(번호: ${index}): \n${item.text} `;
 
     try {
         const result = await model.generateContent({
@@ -276,9 +265,10 @@ export async function analyzeSingleSentence(item, index, apiKey, modelId, signal
         const response = await result.response;
         const text = response.text();
 
-        // 텍스트 마커 파싱 ([번역], [분석])
+        // 텍스트 마커 파싱 및 클리닝
         const translationMatch = text.match(/\[번역\]\s*(.*)/);
-        const analysisLines = [...text.matchAll(/\[분석\]\s*(.*)/g)].map(m => m[1]);
+        const analysisLines = [...text.matchAll(/\[분석\]\s*(.*)/g)]
+            .map(m => m[1].replace(/^(청크|Analysis|분석|•|청크:|\[분석\])[:\s\-]*/i, '').trim());
 
         return {
             index,
@@ -287,7 +277,7 @@ export async function analyzeSingleSentence(item, index, apiKey, modelId, signal
         };
     } catch (error) {
         if (error.name === 'AbortError') throw error;
-        console.error(`[Stage 2] Failed sentence ${index}:`, error);
+        console.error(`[Stage 2] Failed sentence ${index}: `, error);
         return null;
     }
 }
@@ -326,7 +316,7 @@ function analyzeIntraLineRepetition(text) {
         let ellipsis = "... [반복 생략]";
         if (detectedLang === "vi") ellipsis = "... [lược bỏ lặp lại]";
         else if (detectedLang === "en") ellipsis = "... [Repetition Omitted]";
-        return ` ${word.trim()}${ellipsis}`;
+        return ` ${word.trim()}${ellipsis} `;
     }).trim();
     return { original_text: text, refined_text: refined_text, status: isTruncated ? "TRUNCATED" : "PASS" };
 }
