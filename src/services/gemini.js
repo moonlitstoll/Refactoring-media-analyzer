@@ -177,7 +177,7 @@ export async function analyzeSingleSentence(item, index, apiKey, modelId, signal
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: modelId || "gemini-2.0-flash",
-        generationConfig: { maxOutputTokens: 4096, temperature: 0.3 },
+        generationConfig: { temperature: 0.3 },
         safetySettings
     });
 
