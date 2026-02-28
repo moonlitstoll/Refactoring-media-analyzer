@@ -906,8 +906,8 @@ const App = () => {
    * speed and Gemini API rate limits while keeping JSON truncation risk low.
    */
   const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting Optimized 20x2 Analysis for file ${fileId}...`);
-    const BATCH_SIZE = 20;
+    console.log(`[Stage 2] Starting Optimized 15x2 Analysis for file ${fileId}...`);
+    const BATCH_SIZE = 15;
     const PARALLEL_BATCH_COUNT = 2;
 
     let workingData = JSON.parse(JSON.stringify(transcript));

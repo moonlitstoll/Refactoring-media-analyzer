@@ -214,7 +214,10 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: getModels(modelId)[0] || "gemini-2.0-flash",
-        generationConfig: { responseMimeType: "application/json" },
+        generationConfig: {
+            responseMimeType: "application/json",
+            maxOutputTokens: 8192
+        },
         safetySettings
     }, { apiVersion: "v1beta" });
 
