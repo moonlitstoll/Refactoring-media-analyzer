@@ -32,30 +32,32 @@ const STAGE2_PROMPT = `
 6. **핵심 패턴 볼드 강조**: 단순 복합어가 아닌, 문법적 구조나 회화핵심 **패턴(Pattern)**에 해당하는 표현만 **볼드** 처리해. (예: **đâu có ... đâu**, **nếu như ... mà** 등).
 7. 미니멀리즘 유지: 문법 용어('대명사' 등)와 너무 뻔한 정보(성별 지칭 대상 등)는 모두 삭제하고 핵심 의미 위주로 콤팩트하게 보여줘. **청크와 청크 사이에는 반드시 빈 줄을 하나 두어 구분해.**
 
-**[응답 형식 - Light JSON]**
-반드시 아래와 같은 구조의 JSON 배열로 응답하고, 분석 문자열 내부에 \`[Chunk 1]\`과 같은 식별용 태그는 절대 사용하지 마십시오:
-[
-  [번호(Index), "전체 한국어 번역", "줄바꿈과 볼드가 포함된 상세 분석 문자열"],
-  ...
-]
+**[응답 형식 - Tagged Records]**
+반드시 아래와 같은 구조로 응답하십시오. JSON 형식을 절대 사용하지 마십시오:
 
-**[분석 문자열 스타일 가이드]**
-- **헤더 볼드**: 각 청크의 시작(헤더)은 \`**원어** (해석)\` 형식으로 두껍게 표시해줘.
-- **예시**:
+###[번호]###
+한국어 번역
+---
+줄바꿈과 볼드가 포함된 상세 분석 문자열
+[END]
+
+**[예시]**
+###[0]###
+그렇다면 만약에...
+---
 **Thế nếu như mà...** (그렇다면 만약에...)
 Thế: 그러면, 그렇게
 **nếu như mà**: (패턴) 만약 ~라면 (nếu: 만약 + như: ~와 같이 + mà: 강조)
-sau này: 나중에, 앞으로 (sau: 뒤 + này: 이)
+[END]
 
+###[1]###
+너 이제 내 손을 잡지 않잖아.
+---
 **Thì em đâu có nắm tay anh nữa đâu.** (너 이제 내 손을 잡지 않잖아.)
 Thì: 그래서, 그러면
 em: 너, 당신
 **đâu có ... đâu**: (패턴) 전혀 ~하지 않다, 결코 ~하지 않다
-nắm: 쥐다, 잡다
-tay: 손
-anh: 나, 오빠
-nữa: 더, 다시
-**đâu**: (패턴) (**đâu có ... đâu**와 연결) 부정 강조
+[END]
 `;
 
 const getModels = (modelId) => {
@@ -224,38 +226,36 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
     try {
         const result = await model.generateContent([
             STAGE2_PROMPT,
-            `분석 대상: \n${JSON.stringify(sentences.map((s, i) => [i, s.o]))} `
+            `분석 대상 (번호와 대사): \n${sentences.map((s, i) => `${i}: ${s.o}`).join('\n')} `
         ]);
-        let text = await result.response.text();
-        const start = text.indexOf('[');
-        const end = text.lastIndexOf(']');
-        let jsonStr = (start !== -1 && end > start) ? text.substring(start, end + 1) : text.substring(start !== -1 ? start : 0);
+        const text = await result.response.text();
 
-        try {
-            return JSON.parse(jsonStr);
-        } catch (parseError) {
-            console.warn("[Stage 2] 불완전한 JSON 응답 감지, 끝단 보정 스크립트 실행...");
+        // [New] Tag-based Parsing Logic (Robust against truncation)
+        const items = [];
+        const recordRegex = /###\[(\d+)\]###\s*([\s\S]*?)(?=\n###\[\d+\]###|\[END\]|$)/g;
 
-            // [강화] 1단계: 마지막으로 완전히 닫힌 배열 요소까지 복구 시도
-            // 응답이 중간에 잘렸더라도 완전한 요소들은 살려냄
-            const lastComplete = jsonStr.lastIndexOf('],');
-            if (lastComplete !== -1) {
-                const trimmed = jsonStr.substring(0, lastComplete + 1) + ']';
-                try {
-                    const result = JSON.parse(trimmed);
-                    console.warn(`[Stage 2] 부분 복구 성공: ${result.length}개 항목 살림`);
-                    return result;
-                } catch (e) { /* 폴백 진행 */ }
+        let match;
+        while ((match = recordRegex.exec(text)) !== null) {
+            const index = parseInt(match[1]);
+            const content = match[2].trim();
+
+            // 번역과 상세 분석 분리 (--- 구분자 기준)
+            const parts = content.split('---');
+            const translation = parts[0] ? parts[0].trim() : "";
+            const analysis = parts[1] ? parts[1].trim() : "";
+
+            if (translation || analysis) {
+                items.push([index, translation, analysis]);
             }
-
-            // 2단계: 기존 Heuristic (짧게 잘린 경우)
-            let repaired = jsonStr.replace(/[^\]"]+$/, '');
-            if ((repaired.match(/"/g) || []).length % 2 !== 0) repaired += '"';
-            for (let i = 0; i < 3; i++) {
-                try { return JSON.parse(repaired); } catch (e) { repaired += ']'; }
-            }
-            throw new Error("JSON Heuristic repair failed");
         }
+
+        if (items.length === 0) {
+            console.warn("[Stage 2] No tags found in response, raw text sample:", text.substring(0, 100));
+        } else {
+            console.log(`[Stage 2] Parsed ${items.length} records using Tag Engine.`);
+        }
+
+        return items;
     } catch (err) {
         console.error(`[Stage 2] API Call Error:`, err);
         throw err;
