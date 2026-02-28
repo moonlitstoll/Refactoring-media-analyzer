@@ -47,14 +47,16 @@ const STAGE2_PROMPT = `
 [분석] 원어 청크: 한국어 전체 뜻 (단어: 뜻 + 단어: 뜻)
 
 **[작성 예시]**
-문장: "Nếu chúng ta không chuẩn bị cẩn thận thì sẽ gặp rất nhiều khó khăn trong tương lai."
-[번역] 만약 우리가 신중하게 준비하지 않으면 미래에 매우 많은 어려움을 겪을 것이다.
-[분석] **Nếu... thì**: 만약 ~하면 ~하다 (조건/패턴)
-[분석] chúng ta không: 우리는 ~않다 (chúng ta: 우리 + không: 부정)
-[분석] chuẩn bị cẩn thận: 신중히 준비하다 (chuẩn bị: 준비 + cẩn thận: 신중히)
-[분석] sẽ gặp: 겪을 것이다 (sẽ: 미래 + gặp: 만나다/겪다)
-[분석] rất nhiều khó khăn: 매우 많은 어려움 (rất: 매우 + nhiều: 많은 + khó khăn: 어려움)
-[분석] trong tương lai: 미래에 (trong: ~안에 + tương lai: 미래)
+문장: "Nếu như em bận thì mày quay phim ăn nói cho cẩn thận nhá"
+[번역] 만약 네가 바쁘면 너 촬영할 때 말조심해라.
+[분석] **Nếu như ... thì**: 만약 ~라면 ... 그러면 (패턴: **Nếu như ... thì** - 조건/결과)
+[분석] em: 너 (화자보다 낮은 대상)
+[분석] bận: 바쁘다
+[분석] mày: 너 (비격식/반말)
+[분석] quay phim: 촬영하다 (quay: 돌리다 + phim: 영화, 필름)
+[분석] ăn nói: 말하다, 언행 (먹다 (ăn) + 말하다 (nói))
+[분석] cho cẩn thận: 조심해서 (cho: ~하도록, 하게(부사화) + cẩn thận: 조심 (cẩn: 삼갈 근 + thận: 삼갈 신))
+[분석] nhá: ~해라, ~지? (확인/강조/부드러운 명령)
 `;
 
 const STAGE2_BATCH_PROMPT = `
