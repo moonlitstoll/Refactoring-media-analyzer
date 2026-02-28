@@ -26,31 +26,6 @@ const STAGE2_PROMPT = `
 **[7대 분석 규칙]**
 1. 청크 우선 분석: 문장을 기계적으로 쪼개지 말고, 의미가 연결되는 덩어리(Chunk) 단위로 먼저 나누어 보여줘.
 2. 전수 및 순차 분석: 각 청크 아래에서 모든 단어를 등장 순서대로 하나도 빠짐없이 분석해.
-3. 중복 설명 허용: 이전에 나온 단어라도 문장에 다시 등장하면 생략 없이 똑같이 다시 설명해.
-4. 단어별 단일 행(One Line) 분석: 모든 단어(복합어 포함) 설명은 반드시 한 줄에 끝내십시오. 다음절 단어나 복합어 설명 시, 음절별 의미는 별도의 행을 만들지 말고 해당 행 안에서 '+' 또는 '()'를 사용하여 한꺼번에 설명하십시오. (예: phó thủ lãnh đạo: 부지도자, 부총리 (phó (버금 부) + thủ: 머리, 수장 (머리 수) + lãnh đạo: 지도자 (lãnh: 거느릴 령 + đạo: 이끌 도))).
-5. 한자 기반 풀이 통합: 한자 기반 단어 분석 시에도 별도의 행을 생성하지 마십시오. 한글 뜻풀이를 단어 설명 행 안에 포함하십시오. (예: tiền cọc: 보증금 (tiền (돈 전) + cọc (보증))).
-6. **핵심 패턴 볼드 강조**: 단순 복합어가 아닌, 문법적 구조나 회화핵심 **패턴(Pattern)**에 해당하는 표현만 **볼드** 처리해. (예: **đâu có ... đâu**, **nếu như ... mà** 등).
-7. 미니멀리즘 유지: 문법 용어('대명사' 등)와 너무 뻔한 정보(성별 지칭 대상 등)는 모두 삭제하고 핵심 의미 위주로 콤팩트하게 보여줘. **청크와 청크 사이에는 반드시 빈 줄을 하나 두어 구분해.**
-
-**[응답 형식 - Tagged Records]**
-반드시 아래와 같은 구조로 응답하십시오. JSON 형식을 절대 사용하지 마십시오:
-
-###[번호]###
-한국어 번역
----
-줄바꿈과 볼드가 포함된 상세 분석 문자열
-[END]
-
-**[예시]**
-###[0]###
-그렇다면 만약에...
----
-**Thế nếu như mà...** (그렇다면 만약에...)
-Thế: 그러면, 그렇게
-**nếu như mà**: (패턴) 만약 ~라면 (nếu: 만약 + như: ~와 같이 + mà: 강조)
-[END]
-
-###[1]###
 너 이제 내 손을 잡지 않잖아.
 ---
 **Thì em đâu có nắm tay anh nữa đâu.** (너 이제 내 손을 잡지 않잖아.)
@@ -217,8 +192,8 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
     const model = genAI.getGenerativeModel({
         model: getModels(modelId)[0] || "gemini-2.0-flash",
         generationConfig: {
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192
+            maxOutputTokens: 8192,
+            temperature: 0.1
         },
         safetySettings
     }, { apiVersion: "v1beta" });
@@ -250,9 +225,31 @@ export async function analyzeSentences(sentences, apiKey, modelId = "gemini-2.0-
         }
 
         if (items.length === 0) {
-            console.warn("[Stage 2] No tags found in response, raw text sample:", text.substring(0, 100));
+            console.warn("[Stage 2] No tags found in response, trying JSON fallback...");
+            try {
+                const start = text.indexOf('[');
+                const end = text.lastIndexOf(']');
+                if (start !== -1 && end > start) {
+                    const jsonStr = text.substring(start, end + 1);
+                    const parsed = JSON.parse(jsonStr);
+                    if (Array.isArray(parsed)) {
+                        parsed.forEach(row => {
+                            if (Array.isArray(row)) items.push(row);
+                            else if (row && typeof row === 'object') {
+                                items.push([row.number ?? row.id ?? 0, row.korean_translation ?? row.translation ?? "", row.analysis ?? row.detailed_analysis ?? ""]);
+                            }
+                        });
+                    }
+                }
+            } catch (e) {
+                console.warn("[Stage 2] JSON Fallback also failed.");
+            }
+        }
+
+        if (items.length === 0) {
+            console.error("[Stage 2] All parsing failed. Raw response:", text.substring(0, 200));
         } else {
-            console.log(`[Stage 2] Parsed ${items.length} records using Tag Engine.`);
+            console.log(`[Stage 2] Parsed ${items.length} records.`);
         }
 
         return items;

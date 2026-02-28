@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronUp, FileAudio, FileVideo, Plus, Trash2,
   SkipBack, SkipForward, Clock, History, MoreVertical, XCircle, Home
 } from 'lucide-react';
-import { extractTranscript, analyzeSentences } from './services/gemini';
+import { extractTranscript, analyzeSingleSentence } from './services/gemini';
 import { mediaStore } from './utils/MediaStore';
 
 // Helper: Get Media Duration
@@ -178,7 +178,9 @@ const TranscriptItem = memo(({
               <div className="flex items-center gap-1.5 text-indigo-600 font-bold text-[11px] uppercase tracking-wider mb-0.5">
                 <Languages size={12} /> Translation
               </div>
-              <p className="text-slate-700 text-base leading-snug whitespace-pre-line font-medium">{item.translation}</p>
+              <p className="text-slate-700 text-base leading-snug whitespace-pre-line font-medium">
+                {item.translation?.replace(/\\n/g, '\n')}
+              </p>
             </div>
           )}
 
@@ -193,7 +195,7 @@ const TranscriptItem = memo(({
               <div className="p-3 bg-white border border-emerald-100 rounded-xl">
                 <p className="text-slate-800 text-[15px] sm:text-[16px] leading-[1.6] whitespace-pre-line font-medium">
                   {typeof item.analysis === 'string'
-                    ? item.analysis.split(/(\*\*.*?\*\*)/).map((part, i) =>
+                    ? item.analysis.replace(/\\n/g, '\n').split(/(\*\*.*?\*\*)/).map((part, i) =>
                       part.startsWith('**') && part.endsWith('**')
                         ? <strong key={i} className="text-emerald-800 font-extrabold">{part.slice(2, -2)}</strong>
                         : part
@@ -247,7 +249,8 @@ const App = () => {
 
 
   const videoRef = useRef(null);
-  const activeIdxRef = useRef(null);
+  const activeIdxRef = useRef(-1);
+  const stage2AbortRef = useRef(null);
   const isGlobalLoopActiveRef = useRef(isGlobalLoopActive);
   const loopTargetIdxRef = useRef(null); // [Phase 4] 루프 고정 타겟 인덱스
   const lastActionTimeRef = useRef(0); // [4차 수정] 시간 기반 의도 보호 가드
@@ -395,6 +398,8 @@ const App = () => {
 
   const deleteCache = async (key) => {
     if (confirm('Delete this cached transcript?')) {
+      // 분석 중단 신호
+      if (stage2AbortRef.current) stage2AbortRef.current.abort();
       const cachedStr = localStorage.getItem(key);
       if (cachedStr) {
         try {
@@ -415,6 +420,8 @@ const App = () => {
   const clearAllCache = async () => {
     const count = cacheKeys.length;
     if (confirm(`Clear all ${count} cached analysis files?`)) {
+      // 분석 중단 신호
+      if (stage2AbortRef.current) stage2AbortRef.current.abort();
       cacheKeys.forEach(k => localStorage.removeItem(k));
       await mediaStore.clearAll();
       setCacheKeys([]);
@@ -906,9 +913,12 @@ const App = () => {
    * speed and Gemini API rate limits while keeping JSON truncation risk low.
    */
   const runStage2 = async (fileId, fileInfo, transcript, apiKey, modelId) => {
-    console.log(`[Stage 2] Starting Optimized 15x2 Analysis for file ${fileId}...`);
-    const BATCH_SIZE = 15;
-    const PARALLEL_BATCH_COUNT = 2;
+    console.log(`[Stage 2] Starting Atomic Parallel Analysis for file ${fileId}...`);
+
+    // 취소 컨트롤러 초기화
+    if (stage2AbortRef.current) stage2AbortRef.current.abort();
+    stage2AbortRef.current = new AbortController();
+    const { signal } = stage2AbortRef.current;
 
     let workingData = JSON.parse(JSON.stringify(transcript));
     const updateGlobalState = (data) => {
@@ -922,75 +932,69 @@ const App = () => {
 
     if (pendingIndices.length === 0) return;
 
-    for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE * PARALLEL_BATCH_COUNT) {
-      const batchPromises = [];
-      for (let j = 0; j < PARALLEL_BATCH_COUNT; j++) {
-        const start = i + (j * BATCH_SIZE);
-        if (start >= pendingIndices.length) break;
+    // 동시 실행 제한 (Rate Limit 고려하여 최대 10개 병렬)
+    const CONCURRENCY_LIMIT = 10;
 
-        const batchIndices = pendingIndices.slice(start, start + BATCH_SIZE);
-        const batchData = batchIndices.map(idx => workingData[idx]);
+    for (let i = 0; i < pendingIndices.length; i += CONCURRENCY_LIMIT) {
+      if (signal.aborted) break;
 
-        batchPromises.push((async () => {
-          try {
-            const rawResults = await analyzeSentences(batchData, apiKey, modelId);
+      const chunk = pendingIndices.slice(i, i + CONCURRENCY_LIMIT);
+      const chunkPromises = chunk.map(async (globalIdx) => {
+        try {
+          const result = await analyzeSingleSentence(workingData[globalIdx], globalIdx, apiKey, modelId, signal);
 
-            if (Array.isArray(rawResults) && rawResults.length > 0) {
-              let appliedCount = 0;
-              rawResults.forEach(res => {
-                if (!Array.isArray(res)) return;
-
-                const [localIdx, translation, wordsArr] = res;
-                const globalIdx = batchIndices[localIdx];
-
-                // 데이터 검증: 번역이나 분석 내용이 하나라도 있어야만 분석됨으로 인정
-                if (globalIdx !== undefined && workingData[globalIdx] && (translation || wordsArr)) {
-                  workingData[globalIdx] = {
-                    ...workingData[globalIdx],
-                    translation: translation || "",
-                    analysis: wordsArr || "",
-                    isAnalyzed: true
-                  };
-                  appliedCount++;
-                }
-              });
-
-              if (appliedCount > 0) {
-                updateGlobalState(workingData);
-
-                // [INTERMEDIATE SAVE]
-                if (fileInfo && fileInfo.name) {
-                  const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
-                  try {
-                    localStorage.setItem(cacheKey, JSON.stringify({
-                      data: workingData,
-                      metadata: {
-                        name: fileInfo.name,
-                        size: fileInfo.size,
-                        lastModified: fileInfo.lastModified,
-                        savedAt: Date.now(),
-                        status: 'analyzing'
-                      }
-                    }));
-                  } catch (e) { }
-                }
-              }
-            }
-          } catch (err) {
-            console.error(`[Stage 2] Batch Error (Skipping auto-marking):`, err);
+          if (result && result.translation && !signal.aborted) {
+            workingData[globalIdx] = {
+              ...workingData[globalIdx],
+              translation: result.translation,
+              analysis: result.analysis,
+              isAnalyzed: true
+            };
+            return true;
           }
-        })());
+        } catch (err) {
+          if (err.name === 'AbortError') return false;
+          console.error(`[Stage 2] Failed sentence ${globalIdx}:`, err);
+        }
+        return false;
+      });
+
+      const results = await Promise.all(chunkPromises);
+
+      if (results.some(r => r) && !signal.aborted) {
+        updateGlobalState(workingData);
+
+        // 중간 저장
+        if (fileInfo && fileInfo.name) {
+          const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify({
+              data: workingData,
+              metadata: {
+                name: fileInfo.name,
+                size: fileInfo.size,
+                lastModified: fileInfo.lastModified,
+                savedAt: Date.now(),
+                status: 'analyzing'
+              }
+            }));
+          } catch (e) { }
+        }
       }
-      await Promise.all(batchPromises);
-      if (i + BATCH_SIZE * PARALLEL_BATCH_COUNT < pendingIndices.length) {
-        await new Promise(r => setTimeout(r, 1000));
+
+      // API 부하 방지를 위한 미세 지연
+      if (!signal.aborted && i + CONCURRENCY_LIMIT < pendingIndices.length) {
+        await new Promise(r => setTimeout(r, 500));
       }
     }
 
-    // [문제 1 수정] 실패한 항목에 에러 플래그를 달아 UI 영구 로딩 방지
+    if (signal.aborted) {
+      console.log("[Stage 2] Analysis Aborted.");
+      return;
+    }
+
     const failedCount = workingData.filter(d => !d.isAnalyzed).length;
     if (failedCount > 0) {
-      console.warn(`[Stage 2] ${failedCount} items failed. Marking with error flag to release UI.`);
       workingData = workingData.map(item =>
         item.isAnalyzed ? item : { ...item, isAnalyzed: true }
       );
@@ -1031,6 +1035,10 @@ const App = () => {
 
   const removeFile = (id, e) => {
     e.stopPropagation();
+    // 분석 중단 신호
+    if (activeFileId === id && stage2AbortRef.current) {
+      stage2AbortRef.current.abort();
+    }
     setFiles(prev => {
       // [메모리 누수 방지] 파일 제거 시 ObjectURL 해제
       const fileToRemove = prev.find(f => f.id === id);
@@ -1046,6 +1054,8 @@ const App = () => {
 
   const removeAllFiles = () => {
     if (confirm("Remove all active files?")) {
+      // 분석 중단 신호
+      if (stage2AbortRef.current) stage2AbortRef.current.abort();
       // [메모리 누수 방지] 모든 활성 파일의 URL 일괄 해제
       files.forEach(f => { if (f.url) URL.revokeObjectURL(f.url); });
       setFiles([]);
