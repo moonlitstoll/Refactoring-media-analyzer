@@ -919,58 +919,79 @@ const App = () => {
     stage2AbortRef.current = new AbortController();
     const { signal } = stage2AbortRef.current;
 
-    let workingData = JSON.parse(JSON.stringify(transcript));
     const updateGlobalState = (data) => {
       setFiles(prev => prev.map(f => f.id === fileId ? { ...f, data: [...data] } : f));
     };
 
-    const pendingIndices = workingData
+    const saveToCache = (fInfo, data, status) => {
+      if (!fInfo || !fInfo.name) return;
+      const cacheKey = `gemini_analysis_${fInfo.name}_${fInfo.size}`;
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          data,
+          metadata: {
+            name: fInfo.name,
+            size: fInfo.size,
+            lastModified: fInfo.lastModified,
+            savedAt: Date.now(),
+            status
+          }
+        }));
+        setCacheKeys(Object.keys(localStorage).filter(k => k.startsWith('gemini_analysis_')));
+      } catch (e) { }
+    };
+
+    const pendingIndices = transcript
       .map((item, idx) => ({ item, idx }))
       .filter(x => !x.item.isAnalyzed)
       .map(x => x.idx);
 
     if (pendingIndices.length === 0) return;
 
-    try {
-      const batchItems = pendingIndices.map(idx => ({ index: idx, text: workingData[idx].text }));
-      const results = await analyzeBatchSentences(batchItems, apiKey, modelId, signal);
-
-      if (!signal.aborted && results) {
-        results.forEach(res => {
-          if (res && res.translation && !res.failed) {
-            workingData[res.index] = {
-              ...workingData[res.index],
-              translation: res.translation,
-              analysis: res.analysis,
-              isAnalyzed: true
-            };
-          }
-        });
-
-        updateGlobalState(workingData);
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-      console.error(`[Stage 2] Full Batch failed:`, err);
+    // [20x2 Strategy] 20개씩 묶어 최대 2건 동시 처리
+    const BATCH_SIZE = 20;
+    const CONCURRENCY = 2;
+    const batches = [];
+    for (let i = 0; i < pendingIndices.length; i += BATCH_SIZE) {
+      batches.push(pendingIndices.slice(i, i + BATCH_SIZE));
     }
 
-    if (signal.aborted) return;
+    console.log(`[Stage 2] Split into ${batches.length} batches (Max 2 concurrent).`);
 
-    // FINAL PERSISTENT CACHE (Save only if some success)
-    if (fileInfo && fileInfo.name) {
-      const cacheKey = `gemini_analysis_${fileInfo.name}_${fileInfo.size}`;
-      try {
-        localStorage.setItem(cacheKey, JSON.stringify({
-          data: workingData,
-          metadata: {
-            name: fileInfo.name,
-            size: fileInfo.size,
-            lastModified: fileInfo.lastModified,
-            savedAt: Date.now(),
-            status: 'completed'
+    let workingData = JSON.parse(JSON.stringify(transcript));
+
+    // 배치 순차 처리 (병렬성 제어)
+    for (let i = 0; i < batches.length; i += CONCURRENCY) {
+      if (signal.aborted) break;
+
+      const currentBatchGroup = batches.slice(i, i + CONCURRENCY);
+      console.log(`[Stage 2] Running Batch Group ${Math.floor(i / CONCURRENCY) + 1}...`);
+
+      const batchPromises = currentBatchGroup.map(async (batchIndices) => {
+        const batchItems = batchIndices.map(idx => ({ index: idx, text: workingData[idx].text }));
+        try {
+          const results = await analyzeBatchSentences(batchItems, apiKey, modelId, signal);
+          if (results && !signal.aborted) {
+            results.forEach(res => {
+              if (res && res.translation && !res.failed) {
+                workingData[res.index] = {
+                  ...workingData[res.index],
+                  translation: res.translation,
+                  analysis: res.analysis,
+                  isAnalyzed: true
+                };
+              }
+            });
+            // 중간 결과 반영 및 저장
+            updateGlobalState(workingData);
+            saveToCache(fileInfo, workingData, i + (currentBatchGroup.length * BATCH_SIZE) >= pendingIndices.length ? 'completed' : 'analyzing');
           }
-        }));
-      } catch (e) { }
+        } catch (e) {
+          console.error(`[Stage 2] Batch failed:`, e);
+        }
+      });
+
+      await Promise.all(batchPromises);
     }
     console.log(`[Stage 2] Full Batch processing finished.`);
   };

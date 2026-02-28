@@ -93,7 +93,9 @@ const STAGE2_BATCH_PROMPT = `
 
 const getModels = (modelId) => {
     const validModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
-    return [modelId].filter(m => validModels.includes(m));
+    // 모델명이 정확히 일치하거나 포함되는 경우를 찾고, 없으면 기본값(gemini-2.5-flash) 사용
+    const found = validModels.find(m => m === modelId || m.includes(modelId));
+    return [found || "gemini-2.5-flash"];
 };
 
 async function fileToGenerativePart(file) {
@@ -215,6 +217,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
  */
 export async function analyzeBatchSentences(items, apiKey, modelId, signal) {
     if (!apiKey) throw new Error("API Key is required");
+    if (!items || items.length === 0) return [];
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
         model: modelId || "gemini-2.0-flash",
