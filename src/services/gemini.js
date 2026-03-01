@@ -139,7 +139,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
         const streamResult = await model.generateContentStream([mediaData, STAGE1_PROMPT]);
         // 구분자(||)가 없거나 포맷이 약간 틀려도 타임라인 정보를 최대한 추출하도록 유연하게 수정
-        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?(\d{1,2}:\d{1,2}(?:[.:]\d+)?)(?:\])?\s*(?:\|\|)?\s*(.+)/;
+        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?([\d:.]+)(?:\])?\s*(?:\|\|)?\s*(.+)/;
 
         let fullText = "";
         let allMatches = [];
@@ -313,12 +313,22 @@ function normalizeTimestamps(data) {
     return data.map(item => {
         let s = String(item.s || "").replace(/[\[\]\s]/g, '').split(/[-~]/)[0];
         if (s.includes(':')) {
-            const parts = s.split(':');
-            const mm = parts[0].padStart(2, '0');
-            const ssRaw = parts[1];
+            const parts = s.split(':').reverse(); // [ss.ms, mm, hh]
+            const ssRaw = parts[0] || "0";
+            const mmRaw = parts[1] || "0";
+            const hhRaw = parts[2] || "0";
+
+            const mm = mmRaw.padStart(2, '0');
             const secNum = parseFloat(ssRaw) || 0;
             const formattedSS = secNum.toFixed(2).padStart(5, '0');
-            s = `${mm}:${formattedSS} `;
+
+            // If hours exist, prepend them
+            if (parts[2]) {
+                const hh = hhRaw.padStart(2, '0');
+                s = `${hh}:${mm}:${formattedSS}`;
+            } else {
+                s = `${mm}:${formattedSS}`;
+            }
         }
         return { ...item, s };
     }).sort((a, b) => {
