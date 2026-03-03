@@ -310,12 +310,13 @@ const App = () => {
   };
 
   // Helper: Sanitize & Sort Data
-  const sanitizeData = (data) => {
+  // duration: 영상 총 길이(초). 0이면 보정 스킵.
+  const sanitizeData = (data, duration = 0) => {
     if (!Array.isArray(data)) {
       console.error("Data is not an array:", data);
       return [];
     }
-    return data
+    let result = data
       .filter(item => item && typeof item === 'object') // Filter null/non-objects
       .map(item => {
         // Map shortened keys back to original keys if present
@@ -377,6 +378,47 @@ const App = () => {
       })
       .filter(item => item.text && item.text.trim() !== "")
       .sort((a, b) => a.startSeconds - b.startSeconds);
+
+    // [자동 보정] AI가 HH:MM:SS 형태로 타임스탬프를 출력하여
+    // 모든 startSeconds가 영상 길이를 초과하는 경우, 3파트 타임스탬프를 재해석
+    if (duration > 0 && result.length > 0) {
+      const nonZeroItems = result.filter(r => r.startSeconds > 0);
+      const allExceed = nonZeroItems.length > 0 && nonZeroItems.every(r => r.startSeconds > duration);
+
+      if (allExceed) {
+        console.warn(`[SanitizeData] 모든 타임스탬프(${nonZeroItems[0].startSeconds}s~)가 영상 길이(${duration}s)를 초과. 3파트 재해석 시도...`);
+        result = result.map(item => {
+          const ts = String(item.timestamp || '');
+          const parts = ts.replace(/[^\d:.]/g, '').split(':');
+          if (parts.length === 3) {
+            // "00:51:50.00" → 실제 의미: 0분 51초 50센티초 = 51.50초
+            // parts[0]=HH(무시할 분), parts[1]=실제 초, parts[2]=소수점 이하
+            const mm = parseFloat(parts[0]) || 0;
+            const ss = parseFloat(parts[1]) || 0;
+            const cc = parseFloat(parts[2]) || 0;
+            const corrected = (mm * 60) + ss + (cc / 100);
+
+            // 보정된 타임스탬프 문자열도 업데이트
+            const correctedMin = Math.floor(corrected / 60);
+            const correctedSec = (corrected % 60).toFixed(2).padStart(5, '0');
+            const correctedTimestamp = `${String(correctedMin).padStart(2, '0')}:${correctedSec}`;
+
+            return {
+              ...item,
+              seconds: corrected,
+              startSeconds: corrected,
+              endSeconds: corrected + 3.0,
+              timestamp: correctedTimestamp,
+              s: correctedTimestamp
+            };
+          }
+          return item;
+        }).sort((a, b) => a.startSeconds - b.startSeconds);
+        console.log(`[SanitizeData] 보정 완료. 첫 번째 항목: ${result[0]?.startSeconds}s, 마지막: ${result[result.length - 1]?.startSeconds}s`);
+      }
+    }
+
+    return result;
   };
 
   // Sync ref
@@ -449,19 +491,37 @@ const App = () => {
 
         const metadata = hasMetadata ? parsed.metadata : { name: key.replace('gemini_analysis_', '').replace(/_\d+$/, '') };
 
-        const data = sanitizeData(rawData);
-
-        // Try to find a matching file already uploaded
-        // We match by name and size if available
+        // 미디어 파일 매칭 (duration 추출을 위해 먼저 수행)
         let matchingFile = null;
         if (hasMetadata && metadata.size) {
           matchingFile = files.find(f => f.file.name === metadata.name && f.file.size === metadata.size);
         } else {
-          // Fallback to name only
           matchingFile = files.find(f => f.file.name === metadata.name);
         }
 
         let mediaBlob = null;
+        let mediaUrl = matchingFile ? matchingFile.url : null;
+        let fileForDuration = matchingFile ? matchingFile.file : null;
+
+        if (!mediaUrl && metadata.name && metadata.size) {
+          try {
+            mediaBlob = await mediaStore.getFile(metadata.name, metadata.size);
+            if (mediaBlob) {
+              mediaUrl = URL.createObjectURL(mediaBlob);
+              fileForDuration = mediaBlob;
+            }
+          } catch (e) {
+            console.error("Failed to load media from store:", e);
+          }
+        }
+
+        // 영상 길이 확보 후 sanitizeData 호출
+        let cacheDuration = 0;
+        if (fileForDuration) {
+          try { cacheDuration = await getMediaDuration(fileForDuration); } catch (e) { }
+        }
+        const data = sanitizeData(rawData, cacheDuration);
+
         let mediaUrl = matchingFile ? matchingFile.url : null;
 
         // Try to load from MediaStore if not already in memory
@@ -838,7 +898,10 @@ const App = () => {
           console.log("Using cached analysis for", fItem.file.name);
           const parsed = JSON.parse(cached);
           const rawData = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed.data : parsed;
-          const data = sanitizeData(rawData);
+          // 캐시 로드 시에도 duration 기반 보정을 위해 영상 길이 확인
+          let cacheDuration = 0;
+          try { cacheDuration = await getMediaDuration(fItem.file); } catch (e) { /* 실패 시 보정 스킵 */ }
+          const data = sanitizeData(rawData, cacheDuration);
           setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, data: data, isAnalyzing: false, isFromCache: true } : p));
         } else {
           // API Call
@@ -862,7 +925,7 @@ const App = () => {
 
           if (!rawData) throw new Error("Received empty data from Stage 1 API");
 
-          const data = sanitizeData(rawData);
+          const data = sanitizeData(rawData, duration);
 
           if (data.length === 0) {
             throw new Error("Stage 1 extraction returned no valid text data.");

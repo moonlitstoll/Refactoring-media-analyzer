@@ -369,5 +369,9 @@ function detectLanguage(text) {
 function parseTimeString(t) {
     const parts = String(t).replace(/[\[\]\s]/g, '').split(':');
     if (parts.length < 2) return 0;
-    return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+    const rev = parts.reverse();
+    const s = parseFloat(rev[0]) || 0;
+    const m = parseFloat(rev[1]) || 0;
+    const h = parseFloat(rev[2]) || 0;
+    return (h * 3600) + (m * 60) + s;
 }
