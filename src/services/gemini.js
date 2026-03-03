@@ -251,10 +251,14 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         return allMatches.sort((a, b) => a.seconds - b.seconds);
     } catch (err) {
         console.error(`Stage 1 Error: `, err);
-        if (err && err.message && err.message.includes("RECITATION")) {
-            throw new Error("API Error: [RECITATION 블록 감지] 오디오에 유명 노래 가사, 저작물, 연설문 등이 포함되어 있어 AI가 저작권 보호를 위해 텍스트 생성을 차단했습니다. 오디오 구간을 편집하거나 다른 미디어를 사용해 주세요.");
+        const errStr = String(err.message || err);
+        if (errStr.includes("RECITATION")) {
+            throw new Error("[오류: 저작권/표절 필터링] 오디오에 유명 노래 가사나 연설문 등 기존 데이터와 완벽히 일치하는 내용이 감지되어 구글 AI가 생성을 차단했습니다. 1. 이 오디오 특정 구간(노래 등)을 잘라내거나, 2. 다른 모델(예: 1.5 Pro)을 선택해서 시도해 보세요.");
         }
-        throw err;
+        if (errStr.includes("reading from the stream") || errStr.includes("QUIC")) {
+            throw new Error("[오류: 구글 서버 네트워크 불안정] 해외 AI 서버로의 스트리밍 연결이 끊어졌습니다(QUIC Protocol Error). 잠시 후 다시 재생 버튼을 눌러 시도하거나 새로고침 후 진행해 주세요.");
+        }
+        throw new Error(`API Error (Stage 1): ${errStr}`);
     }
 }
 
