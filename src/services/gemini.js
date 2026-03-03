@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 
 const STAGE1_PROMPT = `
 당신은 오디오 데이터에서 사람의 음성을 포착하여 **정확한 타임라인**에 기록하는 '인음 전문 전사가'입니다. 
@@ -11,15 +11,17 @@ const STAGE1_PROMPT = `
 5. **인음(Human Vocal) 우선순위**: 배경음악, 잡음은 무시하고 인간의 목소리 주파수에만 집중하십시오. 음성이 불분명하다면 시간만 흘려보낸 뒤 다음 구간에서 재개하십시오.
 
 **[출력 규칙]**
-- [분:초.밀리초] || [원문] 형식으로만 한 줄씩 출력하십시오.
-- 밀리초 부분은 반드시 소수점 두 자리(0.01초 단위)로 고정하십시오. (예: [01:23.45])
-- 시작 시간만 기록하십시오. 부연 설명 없이 데이터만 출력하십시오.
+- 반드시 JSON 배열(Array of Objects) 형태로 응답하십시오.
+- 각 객체는 다음 필드를 가져야 합니다:
+  - time: 해당 문장의 시작 시간을 나타내는 초 단위의 실수 (예: 1분 50.25초 -> 110.25)
+  - text: 전사된 사람의 음성 대사
+  - is_music_or_noise: 현재 구간이 사람의 명확한 대사가 없는 침묵, 배경음악(BGM), 단순 잡음이거나 억지로 생성된 문장이라고 판단될 경우 true, 정상적인 대사일 경우 false
 
 **[침묵 및 환각(Hallucination) 엄금]**
-- 실제 대화가 없는 구간은 텍스트를 출력하지 마십시오.
-- **무한 반복 및 환각 금지**: 대사가 없는 구간, 잡음, 배경음악 구간을 'Trời ơi'나 짧은 감탄사 같은 텍스트로 임의로 채워 넣지 마십시오. 강제로 반복 생성하는 것을 엄금합니다. 시간이 전진하더라도 똑같은 문장을 습관적으로 반복해서 출력하지 마십시오. 중복 텍스트는 시스템 상에서 차단되므로 억지로 공백을 메우려 하지 마십시오.
+- 실제 대화가 없는 구간은 is_music_or_noise를 true로 설정하고 텍스트를 출력하지 마십시오.
+- **무한 반복 및 환각 금지**: 대사가 없는 구간, 잡음, 배경음악 구간을 'Trời ơi'나 짧은 감탄사 같은 텍스트로 임의로 채워 넣지 마십시오. 전혀 의미 없는 잡음과 노이즈가 나오면 is_music_or_noise 필드를 반드시 true로 지정하십시오!
 - 공백을 메우기 위해 이전 문장을 반복하는 행위는 절대 금지됩니다.
-- **짧고 반복되는 감탄사(예: 'Anh ơi', 'Trời ơi' 등)가 서로 다른 시간대에 여러 번 등장하더라도 맨 앞의 첫 번째 감탄사만 전사하고, 이후 연속되는 동일한 감탄사부터는 완전히 무시(출력 생략)하십시오.**
+- **짧고 반복되는 감탄사(예: 'Anh ơi', 'Trời ơi' 등)가 계속 반복 등장하더라도 첫 번째만 전사하고, 이후 의미없는 감탄사는 is_music_or_noise를 true로 지정하십시오.**
 `;
 
 const STAGE2_PROMPT = `
@@ -133,16 +135,30 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const mediaData = await fileToGenerativePart(file);
         const model = genAI.getGenerativeModel({
             model: modelName,
-            generationConfig: { temperature: 0.1 },
+            generationConfig: {
+                temperature: 0.1,
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: SchemaType.ARRAY,
+                    items: {
+                        type: SchemaType.OBJECT,
+                        properties: {
+                            time: { type: SchemaType.NUMBER, description: "해당 문장의 시작 시간을 나타내는 초 단위 실수 (예: 110.25)" },
+                            text: { type: SchemaType.STRING, description: "전사된 인간의 대사" },
+                            is_music_or_noise: { type: SchemaType.BOOLEAN, description: "음악, 잡음, 정적, 또는 중복/환각 텍스트 여부" }
+                        },
+                        required: ["time", "text", "is_music_or_noise"]
+                    }
+                }
+            },
             safetySettings
         }, { apiVersion: "v1beta" });
 
         const streamResult = await model.generateContentStream([mediaData, STAGE1_PROMPT]);
-        // 구분자(||)가 없거나 포맷이 약간 틀려도 타임라인 정보를 최대한 추출하도록 유연하게 수정
-        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?([\d:.]+)(?:\])?\s*(?:\|\|)?\s*(.+)/;
 
         let fullText = "";
         let allMatches = [];
+        let parsedCount = 0;
         let lastSentences = [];
         const historyCache = new Map();
 
@@ -151,17 +167,32 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             if (!chunkText) continue;
             fullText += chunkText;
 
-            const lines = fullText.split('\n');
-            fullText = lines.pop() || "";
+            let parsedArray = [];
+            try {
+                let validText = fullText.trim();
+                // JSON 배열 스트림이 닫히지 않았을 경우 임시로 닫아 파싱 시도
+                if (!validText.endsWith("]")) {
+                    const lastBrace = validText.lastIndexOf("}");
+                    if (lastBrace !== -1) {
+                        validText = validText.substring(0, lastBrace + 1) + "]";
+                    } else {
+                        validText = "[]";
+                    }
+                }
+                parsedArray = JSON.parse(validText);
+            } catch (e) {
+                // 파싱 실패 시 다음 청크를 기다림
+                continue;
+            }
 
-            for (const line of lines) {
-                const match = line.match(lineRegex);
-                if (!match) continue;
+            for (let i = parsedCount; i < parsedArray.length; i++) {
+                const item = parsedArray[i];
+                if (!item || item.is_music_or_noise) continue; // 노이즈/음악 구간 필터링!
 
-                const timeStr = match[1];
-                let content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
+                let content = item.text ? item.text.trim() : "";
                 if (!content) continue;
 
+                // 기존 문장 반복 검사
                 const analysisResult = analyzeIntraLineRepetition(content);
                 if (analysisResult.status === "BLOCKED") {
                     content = analysisResult.refined_text;
@@ -169,7 +200,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     content = analysisResult.refined_text;
                 }
 
-                const currentTime = parseTimeString(timeStr);
+                const currentTime = item.time || 0;
                 const normalizedContent = content.toLowerCase().trim();
 
                 if (normalizedContent.length <= 50) {
@@ -184,28 +215,35 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                 lastSentences.push(normalizedContent);
                 if (lastSentences.length > 5) lastSentences.shift();
 
-                allMatches.push({ s: timeStr, o: content });
-            }
-        }
+                // 초단위 float를 MM:SS.cc 문자열 포맷으로 자체 변환 
+                const mm = Math.floor(currentTime / 60).toString().padStart(2, '0');
+                const ss = (currentTime % 60).toFixed(2).padStart(5, '0');
+                const timeStr = `${mm}:${ss}`;
 
-        if (fullText.trim()) {
-            const match = fullText.match(lineRegex);
-            if (match) {
-                let content = match[2] ? match[2].replace(/^\|\|\s*/, '').trim() : '';
-                if (content) {
-                    const analysisResult = analyzeIntraLineRepetition(content);
-                    if (analysisResult.status !== "BLOCKED") {
-                        allMatches.push({ s: match[1], o: analysisResult.refined_text });
-                    }
-                }
+                allMatches.push({
+                    s: timeStr,
+                    o: content,
+                    timestamp: timeStr,
+                    seconds: currentTime,
+                    startSeconds: currentTime, // 실시간 UI 지원용 필드
+                    text: content
+                });
+            }
+            parsedCount = parsedArray.length;
+
+            // 실시간 프로그레스 콜백 발생
+            if (onProgress && allMatches.length > 0) {
+                onProgress([...allMatches]);
             }
         }
 
         if (allMatches.length === 0) {
             console.error("[Stage 1] Analysis failed. AI Raw Output Sample:", fullText.substring(0, 500));
-            throw new Error("API Error (Stage 1): No data found. (Check console for raw output)");
+            throw new Error("API Error (Stage 1): No valid data found. Video might just be music/noise.");
         }
-        return normalizeTimestamps(allMatches);
+
+        // 정규화는 위에서 자체적으로 하였으므로 추출 데이터 그대로 반환
+        return allMatches.sort((a, b) => a.seconds - b.seconds);
     } catch (err) {
         console.error(`Stage 1 Error: `, err);
         throw err;
