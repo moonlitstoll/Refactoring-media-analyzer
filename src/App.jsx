@@ -896,13 +896,14 @@ const App = () => {
           setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, isAnalyzing: true } : p));
 
           let rawData;
+          let fileDuration = 0;
           try {
             // Get actual duration for segmented analysis
-            const duration = await getMediaDuration(fItem.file);
-            console.log(`[Stage 1] Real duration for ${fItem.file.name}: ${duration}s`);
+            fileDuration = await getMediaDuration(fItem.file);
+            console.log(`[Stage 1] Real duration for ${fItem.file.name}: ${fileDuration}s`);
 
             // STEP 1: Fast Extraction (Stage 1) - Now with Sequential Chunks
-            rawData = await extractTranscript(fItem.file, apiKey, selectedModel, duration, (incrementalData) => {
+            rawData = await extractTranscript(fItem.file, apiKey, selectedModel, fileDuration, (incrementalData) => {
               // Real-time UI update
               setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, data: incrementalData } : p));
             });
@@ -912,7 +913,7 @@ const App = () => {
 
           if (!rawData) throw new Error("Received empty data from Stage 1 API");
 
-          const data = sanitizeData(rawData, duration);
+          const data = sanitizeData(rawData, fileDuration);
 
           if (data.length === 0) {
             throw new Error("Stage 1 extraction returned no valid text data.");
