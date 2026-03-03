@@ -522,19 +522,6 @@ const App = () => {
         }
         const data = sanitizeData(rawData, cacheDuration);
 
-        let mediaUrl = matchingFile ? matchingFile.url : null;
-
-        // Try to load from MediaStore if not already in memory
-        if (!mediaUrl && metadata.name && metadata.size) {
-          try {
-            mediaBlob = await mediaStore.getFile(metadata.name, metadata.size);
-            if (mediaBlob) {
-              mediaUrl = URL.createObjectURL(mediaBlob);
-            }
-          } catch (e) {
-            console.error("Failed to load media from store:", e);
-          }
-        }
 
         const id = 'cached-' + Date.now();
         const name = metadata.name;

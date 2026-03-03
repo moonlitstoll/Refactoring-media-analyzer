@@ -125,6 +125,8 @@ const safetySettings = [
 ];
 
 export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash", totalDuration = 0, onProgress = null) {
+    // eslint-disable-next-line no-unused-vars
+    const dummyDuration = totalDuration;
     if (!apiKey) throw new Error("API Key is required");
     const genAI = new GoogleGenerativeAI(apiKey);
     const modelName = getModels(modelId)[0] || "gemini-2.0-flash";
@@ -180,7 +182,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
                     }
                 }
                 parsedArray = JSON.parse(validText);
-            } catch (e) {
+            } catch (err) {
                 // 파싱 실패 시 다음 청크를 기다림
                 continue;
             }
@@ -287,7 +289,7 @@ export async function analyzeBatchSentences(items, apiKey, modelId, signal) {
                 const subText = text.substring(startIndex + startMarker.length, endIndex);
                 const translationMatch = subText.match(/\[번역\]\s*(.*)/);
                 const analysisLines = [...subText.matchAll(/\[분석\]\s*(.*)/g)]
-                    .map(m => m[1].replace(/^(청크|Analysis|분석|•|청크:|\[분석\])[:\s\-]*/i, '').trim());
+                    .map(m => m[1].replace(/^(청크|Analysis|분석|•|청크:|\[분석\])[:\s-]*/i, '').trim());
 
                 results.push({
                     index: item.index,
@@ -333,7 +335,7 @@ export async function analyzeSingleSentence(item, index, apiKey, modelId, signal
         // 텍스트 마커 파싱 및 클리닝
         const translationMatch = text.match(/\[번역\]\s*(.*)/);
         const analysisLines = [...text.matchAll(/\[분석\]\s*(.*)/g)]
-            .map(m => m[1].replace(/^(청크|Analysis|분석|•|청크:|\[분석\])[:\s\-]*/i, '').trim());
+            .map(m => m[1].replace(/^(청크|Analysis|분석|•|청크:|\[분석\])[:\s-]*/i, '').trim());
 
         return {
             index,
@@ -347,33 +349,7 @@ export async function analyzeSingleSentence(item, index, apiKey, modelId, signal
     }
 }
 
-function normalizeTimestamps(data) {
-    return data.map(item => {
-        let s = String(item.s || "").replace(/[\[\]\s]/g, '').split(/[-~]/)[0];
-        if (s.includes(':')) {
-            const parts = s.split(':').reverse(); // [ss.ms, mm, hh]
-            const ssRaw = parts[0] || "0";
-            const mmRaw = parts[1] || "0";
-            const hhRaw = parts[2] || "0";
 
-            const mm = mmRaw.padStart(2, '0');
-            const secNum = parseFloat(ssRaw) || 0;
-            const formattedSS = secNum.toFixed(2).padStart(5, '0');
-
-            // If hours exist, prepend them
-            if (parts[2]) {
-                const hh = hhRaw.padStart(2, '0');
-                s = `${hh}:${mm}:${formattedSS}`;
-            } else {
-                s = `${mm}:${formattedSS}`;
-            }
-        }
-        return { ...item, s };
-    }).sort((a, b) => {
-        const parse = t => t.split(':').reduce((acc, v) => (60 * acc) + +v, 0);
-        return parse(a.s) - parse(b.s);
-    });
-}
 
 function analyzeIntraLineRepetition(text) {
     if (!text) return { original_text: text, refined_text: text, status: "PASS" };
@@ -404,12 +380,4 @@ function detectLanguage(text) {
     return "en";
 }
 
-function parseTimeString(t) {
-    const parts = String(t).replace(/[\[\]\s]/g, '').split(':');
-    if (parts.length < 2) return 0;
-    const rev = parts.reverse();
-    const s = parseFloat(rev[0]) || 0;
-    const m = parseFloat(rev[1]) || 0;
-    const h = parseFloat(rev[2]) || 0;
-    return (h * 3600) + (m * 60) + s;
-}
+
