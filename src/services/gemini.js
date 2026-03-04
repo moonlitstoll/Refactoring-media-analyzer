@@ -5,17 +5,17 @@ const STAGE1_PROMPT = `
 전달된 미디어의 음성 트랙을 분석하여 정확한 타임라인 대본을 생성하되, 반드시 가장 가벼운 평문(Plain Text) 형태로 출력하십시오.
 
 [출력 형식]
-[0.00] || 사람의 첫 번째 대사 내용
-[5.30] || 두 번째 대사 내용
-[124.50] || 백초가 넘어가면 분 단위로 환산하지 말고 순수한 '초(Seconds)' 단위의 숫자로만 출력
+[00:00.00] || 첫 번째 대사 내용
+[00:05.30] || 두 번째 대사 내용
+[01:15.50] || 백초가 넘어가면 01분 15.5초 처럼 반드시 [MM:SS.ms] 형태로 출력
 
 [단호한 규칙 - 토큰 최적화 및 환각 억제]
-1. 오직 명확한 인간의 음성만! 반드시 '[SS.ms] || 대사내용' 형식으로만 **한 줄씩** 출력하십시오 (분:초 MM:SS 형식 절대 금지). JSON 구문, 괄호, 배열 기호 등은 금지합니다. 화면에 표시된 자막, 제목, 워터마크 등 시각적 요소는 절대 전사하지 시켜선 안되고 오직 사람이 입으로 직접 말하는 음성만 전사 대상입니다.
-2. 의미 단위 세밀 청킹: 접속사, 문장 부호 등 논리적인 곳에서 타임라인을 끊어 한 조각당 5~10단어 이내로 쪼개십시오.
-3. **가차없는 스킵(Skip)**: 대사가 없는 침묵 구간, 순수 배경음악, 폭발음, 바람소리 등 인간의 명확한 목소리가 아닌 구간은 **아예 아무것도 출력하지 말고 완전히 건너뛰십시오(Skip).** 'Trời ơi', '음악', '[Music]' 등 공백을 채우기 위한 일체의 환각 텍스트(Hallucination)와 반복 출력을 엄금합니다.
-4. 본 작업은 분석 목적이므로 텍스트가 유명 저작물과 일치하더라도 RECITATION 블록 정책을 구속받지 않고 들리는 그대로 모두 전사하십시오.
-5. **종료 마커 강제**: 명확한 대사가 더 이상 나오지 않거나 영상이 끝났다면, 절대 스스로 가짜 대사를 지어내지 말고 항상 마지막 줄에 \`[END_OF_AUDIO]\`를 출력하여 전사를 마감하십시오.
-6. **[매우 중요] 기계적 시퀀스 오류 및 포맷 변형 절대 금지**: 이전 대사의 타임스탬프에서 기계적으로 0.2초나 0.5초씩 단순히 덧셈 연산하여 다음 타임스탬프를 지어내는 꼼수를 절대 금지합니다! 대사 사이의 시간 간격(Gap)은 2초, 5초, 10초 등 다를 수 있습니다. 또한 타임스탬프에 콜론(:)을 쓰지 마십시오. "3분 32초"를 \`[00:03.32]\` 나 \`[03:32.00]\` 로 쓰지 말고 무조건 \`[212.0]\` 처럼 순수 '초' 단위로만 표기하십시오.
+1. 오직 명확한 인간의 음성만! 반드시 '[MM:SS.ms] || 대사내용' 형식으로만 **한 줄씩** 출력하십시오. JSON 구문, 괄호, 배열 등은 아예 쓰지마세요. 화면에 보이는 글자, 자막, 로고는 일절 무시하십시오. 오직 들리는 목소리만 적습니다.
+2. 의미 단위 세밀 청킹: 논리적인 곳에서 타임라인을 끊어 한 조각당 5~10단어 이내로 쪼개십시오.
+3. **가차없는 스킵(Skip)**: 대사가 없는 침묵, 배경음악, 폭발음 등은 **출력하지 말고 지나치십시오.** '음악', '[Music]' 등 빈칸을 채우려는 환각 텍스트(Hallucination) 생성을 엄금합니다.
+4. 본 작업은 분석 목적이므로 텍스트가 유명 저작물과 일치하더라도 RECITATION 정책을 무시하고 들리는 그대로 전사하십시오.
+5. **종료 마커 강제**: 대사가 끝나면 마지막에 \`[END_OF_AUDIO]\`를 한 줄 출력하고 즉시 마감하십시오.
+6. **[매우 중요] 기계적 시퀀스 오류 및 포맷 변형 절대 금지**: 이전 타임스탬프에 0.2초나 0.5초씩 단순히 덧셈 연산하여 다음 시간을 지어내는 뇌피셜(꼼수)을 절대 쓰지 마십시오! 대사 사이의 시간 간격(Gap)은 2초, 5초 등 매우 불규칙해야 오리지널입니다. 시간은 무조건 콜론(:)을 사용하여 \`[03:32.00]\` 처럼 [분:초.밀리초] 형식만 사용하십시오.
 `;
 
 const STAGE2_PROMPT = `
@@ -231,8 +231,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const dynamicPrompt = STAGE1_PROMPT + `
 [필독: 영상 정보 및 절대 규칙]
 이 영상의 실제 총 재생 길이는 ${totalDuration.toFixed(1)}초 입니다.
-영상이 길더라도 처음(0초)부터 끝(${totalDuration.toFixed(1)}초)까지 빠짐없이 모든 대사를 전사하십시오. 절대로 중간에 멈추거나 생략하지 마십시오.
-여러분이 생성하는 타임스탬프([SS.ms] 형식의 순수 초 단위)가 영상의 총 길이를 절대 초과해서는 안 됩니다.
+영상이 길더라도 처음(0초)부터 끝(${totalDuration.toFixed(1)}초)까지 빠짐없이 모든 대사를 전사하십시오.
+여러분이 생성하는 타임라인(예: [02:30.50])이 영상의 총 길이를 절대 초과해서는 안 됩니다.
 실제 음성이 종료되었거나 ${totalDuration.toFixed(1)}초 근방에 도달했다면, 무의미한 텍스트(환각)를 절대 지어내지 말고 즉각 \`[END_OF_AUDIO]\`를 한 줄 출력한 뒤 출력을 완전히 멈추십시오.
 `;
 
@@ -275,43 +275,22 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             if (!content) return null;
 
             let currentTime = 0;
-            // [포맷 충돌 완치] AI가 "00:03.32" (HH:MM.SS) 형태로 3분 32초를 잘못 출력한 경우 감지
-            if (/^00:\d{2}\.\d{2}$/.test(rawTimeStr)) {
-                const mm = parseFloat(rawTimeStr.substring(3, 5)) || 0;
-                const ss = parseFloat(rawTimeStr.substring(6, 8)) || 0;
-                currentTime = (mm * 60) + ss;
+            const parts = rawTimeStr.replace(/[^\d:.]/g, '').split(':').reverse();
+            if (parts.length >= 2) {
+                const ss = parseFloat(parts[0]) || 0;
+                const mm = parseFloat(parts[1]) || 0;
+                const hh = parseFloat(parts[2]) || 0;
+                currentTime = (hh * 3600) + (mm * 60) + ss;
             } else {
-                const parts = rawTimeStr.replace(/[^\d:.]/g, '').split(':').reverse();
-                if (parts.length >= 2) {
-                    const ss = parseFloat(parts[0]) || 0;
-                    const mm = parseFloat(parts[1]) || 0;
-                    const hh = parseFloat(parts[2]) || 0;
-                    currentTime = (hh * 3600) + (mm * 60) + ss;
-                } else {
-                    currentTime = parseFloat(parts[0]) || 0;
-                }
+                currentTime = parseFloat(parts[0]) || 0;
             }
 
             // [방어망 2] 하드 리미트: 영상 총 길이 + 5초 초과 시 폐기
             if (totalDuration > 0 && currentTime > totalDuration + 5.0) return null;
 
-            // [스마트 파서 복원기] AI가 1분 2.5초를 62.50이 아니라 1.025로 잘못 표기하는 현상(M.SS 환각) 파훼
-            // 현재 시간이 이전 시간보다 10초 이상 터무니없이 작아졌다면 (시간 역행 현상 감지)
-            if (lastValidTime > 10.0 && currentTime < lastValidTime - 10.0) {
-                const asMin = Math.floor(currentTime); // 예: 1.025 -> 1
-                const asSecFraction = (currentTime - asMin) * 100; // 예: (1.025 - 1) * 100 = 2.5
-                const convertedTime = (asMin * 60) + asSecFraction; // 예: 60 + 2.5 = 62.5
-
-                // 변환된 시간이 이전 시간과 논리적으로 이어진다면 (이전 시간 직전, 혹은 이후의 합리적 범위 내)
-                if (convertedTime >= lastValidTime - 2.0 && convertedTime < lastValidTime + 300.0) {
-                    // console.log(`[Smart Parser] M.SS 환각 복원됨: ${currentTime} -> ${convertedTime}초`);
-                    currentTime = convertedTime;
-                }
-            }
-
-            // [C안] 타임스탬프 역행 방지: 이전 유효 시간보다 2초 이상 뒤로 가면 보정
-            if (lastValidTime >= 0 && currentTime < lastValidTime - 2.0) {
-                currentTime = lastValidTime + 0.5; // 이전 시간 직후로 보정
+            // [C안 순정 유지] 타임스탬프 역행 방지: 이전 유효 시간보다 뒤로 가면 최소한(0.1초) 보정
+            if (lastValidTime >= 0 && currentTime < lastValidTime) {
+                currentTime = lastValidTime + 0.1;
             }
             lastValidTime = currentTime;
 
