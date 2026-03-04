@@ -130,7 +130,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                temperature: 0.1
+                temperature: 0.1,
+                maxOutputTokens: 65536,
+                ...(modelName.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {})
             },
             safetySettings
         }, { apiVersion: "v1beta" });
@@ -138,6 +140,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const dynamicPrompt = STAGE1_PROMPT + `
 [필독: 영상 정보 및 절대 규칙]
 이 영상의 실제 총 재생 길이는 ${totalDuration.toFixed(1)}초 입니다.
+영상이 길더라도 처음(0초)부터 끝(${totalDuration.toFixed(1)}초)까지 빠짐없이 모든 대사를 전사하십시오. 절대로 중간에 멈추거나 생략하지 마십시오.
 여러분이 생성하는 타임라인([MM:SS.ms])이 영상의 총 길이를 절대 초과해서는 안 됩니다.
 실제 음성이 종료되었거나 ${totalDuration.toFixed(1)}초 근방에 도달했다면, 무의미한 환각 텍스트(1초 단위 가짜 대사 등)를 절대 지어내지 말고 즉각 \`[END_OF_AUDIO]\`를 한 줄 출력한 뒤 출력을 완전히 멈추십시오.
 `;
@@ -223,10 +226,19 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             if (!chunkText) continue;
             fullText += chunkText;
 
-            // [방어망 1] AI 종료 마커 감지 시 즉각 파싱 종료
+            // [방어망 1] AI 종료 마커 감지 — 영상의 90% 이상 전사된 경우에만 존중 (조기 종료 방지)
             if (fullText.includes('[END_OF_AUDIO]')) {
-                console.log("[Stage 1] END_OF_AUDIO marker detected! Stopping hallucination stream.");
-                break;
+                const lastMatch = allMatches[allMatches.length - 1];
+                const lastTime = lastMatch ? lastMatch.seconds : 0;
+                const progressRatio = totalDuration > 0 ? lastTime / totalDuration : 1;
+                if (progressRatio >= 0.9) {
+                    console.log(`[Stage 1] END_OF_AUDIO at ${(progressRatio * 100).toFixed(0)}% progress. Stopping stream.`);
+                    break;
+                } else {
+                    console.log(`[Stage 1] END_OF_AUDIO detected too early (${(progressRatio * 100).toFixed(0)}%). Ignoring and continuing...`);
+                    // 마커를 제거하여 다음 chunk에서 재감지 방지
+                    fullText = fullText.replace('[END_OF_AUDIO]', '');
+                }
             }
 
             // [증분 파싱] 완성된 줄만 처리, 마지막 미완성 줄은 다음 chunk로 이월
