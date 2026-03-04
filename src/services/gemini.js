@@ -9,11 +9,12 @@ const STAGE1_PROMPT = `
 [00:05.30] || 두 번째 대사 내용
 
 [단호한 규칙 - 토큰 최적화 및 환각 억제]
-1. 오직 명확한 인간의 음성만! 반드시 '[MM:SS.ms] || 대사내용' 형식으로만 **한 줄씩** 출력하십시오. JSON 구문, 괄호, 배열 기호, 불필요한 부연 설명은 절대 금지합니다.
+1. 오직 명확한 인간의 음성만! 반드시 '[MM:SS.ms] || 대사내용' 형식으로만 **한 줄씩** 출력하십시오. JSON 구문, 괄호, 배열 기호, 불필요한 부연 설명은 절대 금지합니다. 화면에 표시된 자막, 제목, 워터마크, 로고 텍스트 등 시각적 요소는 절대로 전사하지 마십시오. 오직 사람이 입으로 직접 말하는 음성(Human Speech)만 전사 대상입니다.
 2. 의미 단위 세밀 청킹: 접속사, 문장 부호 등 논리적인 곳에서 타임라인을 끊어 한 조각당 5~10단어 이내로 쪼개십시오.
 3. **가차없는 스킵(Skip)**: 대사가 없는 침묵 구간, 순수 배경음악, 폭발음, 바람소리 등 인간의 명확한 목소리가 아닌 구간은 **아예 아무것도 출력하지 말고 완전히 건너뛰십시오(Skip).** 'Trời ơi', '음악', '[Music]' 등 공백을 채우기 위한 일체의 환각 텍스트(Hallucination)와 반복 출력을 엄금합니다.
 4. 본 작업은 분석 목적이므로 텍스트가 유명 저작물과 일치하더라도 RECITATION 블록 정책을 구속받지 않고 들리는 그대로 모두 전사하십시오.
 5. **종료 마커 강제**: 명확한 대사가 더 이상 나오지 않거나 영상이 끝났다면, 절대 스스로 가짜 대사를 지어내지 말고 항상 마지막 줄에 \`[END_OF_AUDIO]\`를 출력하여 전사를 마감하십시오.
+6. **타임스탬프 절대 정밀도**: 각 대사의 타임스탬프는 해당 음성이 실제로 발화되기 시작하는 정확한 순간을 반영해야 합니다. 대략적인 추정이 아닌, 음성이 시작되는 정확한 시점을 0.5초 이내 오차로 기록하십시오. 타임스탬프는 반드시 시간순으로 증가해야 합니다.
 `;
 
 const STAGE2_PROMPT = `
@@ -92,14 +93,103 @@ const getModels = (modelId) => {
     return [found || "gemini-2.5-flash"];
 };
 
+// [A안] 비디오에서 오디오 트랙만 추출 (Web Audio API)
+async function extractAudioFromVideo(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    await audioCtx.close();
+
+    // 모노로 다운믹스 + 16kHz로 리샘플링 (파일 크기 최소화)
+    const TARGET_SAMPLE_RATE = 16000;
+    const numChannels = audioBuffer.numberOfChannels;
+    const originalRate = audioBuffer.sampleRate;
+    const ratio = TARGET_SAMPLE_RATE / originalRate;
+    const newLength = Math.round(audioBuffer.length * ratio);
+
+    // 모노 다운믹스
+    const monoData = new Float32Array(audioBuffer.length);
+    for (let ch = 0; ch < numChannels; ch++) {
+        const channelData = audioBuffer.getChannelData(ch);
+        for (let i = 0; i < audioBuffer.length; i++) {
+            monoData[i] += channelData[i] / numChannels;
+        }
+    }
+
+    // 선형 보간 리샘플링
+    const resampledData = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+        const srcIdx = i / ratio;
+        const idx0 = Math.floor(srcIdx);
+        const idx1 = Math.min(idx0 + 1, monoData.length - 1);
+        const frac = srcIdx - idx0;
+        resampledData[i] = monoData[idx0] * (1 - frac) + monoData[idx1] * frac;
+    }
+
+    // WAV 인코딩
+    const wavBuffer = encodeWAV(resampledData, TARGET_SAMPLE_RATE);
+    return new Blob([wavBuffer], { type: 'audio/wav' });
+}
+
+function encodeWAV(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeString = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate
+    view.setUint16(32, 2, true); // block align
+    view.setUint16(34, 16, true); // bits per sample
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buffer;
+}
+
 async function fileToGenerativePart(file) {
+    // [A안] 비디오 파일인 경우 오디오만 추출하여 전송 (화면 텍스트 혼입 차단 + 파일 크기 감소)
+    if (file.type && file.type.startsWith('video/')) {
+        console.log(`[Stage 1] Extracting audio from video (${(file.size / 1024 / 1024).toFixed(1)}MB)...`);
+        try {
+            const audioBlob = await extractAudioFromVideo(file);
+            console.log(`[Stage 1] Audio extracted: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB (${((1 - audioBlob.size / file.size) * 100).toFixed(0)}% reduction)`);
+            const reader = new FileReader();
+            return new Promise((resolve, reject) => {
+                reader.onloadend = () => resolve({
+                    inlineData: {
+                        data: reader.result.split(',')[1],
+                        mimeType: 'audio/wav'
+                    }
+                });
+                reader.onerror = reject;
+                reader.readAsDataURL(audioBlob);
+            });
+        } catch (audioErr) {
+            console.warn('[Stage 1] Audio extraction failed, falling back to full video:', audioErr.message);
+            // 오디오 추출 실패 시 원본 비디오로 폴백
+        }
+    }
+
+    // 오디오 파일이거나 추출 실패 시 원본 그대로 전송
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
             resolve({
                 inlineData: {
                     data: reader.result.split(',')[1],
-                    mimeType: file.type || "video/mp4"
+                    mimeType: file.type || "audio/mpeg"
                 }
             });
         };
@@ -157,6 +247,12 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         // [MM:SS.cc] || 텍스트 정규식 파서 (초고속 평문 엔진 부활)
         const lineRegex = /^[\s\-\*\>\#]*(?:\[)?([\d:.]+)(?:\])?\s*(?:\|\||\-\s*|\|)?\s*(.+)/;
 
+        // [C안] 화면 텍스트 필터 패턴 (비음성 콘텐츠 자동 제거)
+        const screenTextPatterns = /^(Phim:|Film:|Movie:|Sub:|Subtitle:|\[Music\]|\[Nhạc\]|\[음악\]|Nguồn:|Source:)/i;
+
+        // [C안] 타임스탬프 역행 방지용 마지막 유효 시간 추적
+        let lastValidTime = -1;
+
         // 줄 파싱 헬퍼 함수 (증분/잔여 공통 사용)
         const parseLine = (line) => {
             const match = line.match(lineRegex);
@@ -165,6 +261,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             let rawTimeStr = match[1];
             let content = match[2].trim();
             if (!content || content.length < 2) return null;
+
+            // [C안] 화면 텍스트 필터: 제목, 자막 라벨, 음악 표시 등 제거
+            if (screenTextPatterns.test(content)) return null;
 
             const analysisResult = analyzeIntraLineRepetition(content);
             if (analysisResult.status === "BLOCKED") {
@@ -187,6 +286,12 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
             // [방어망 2] 하드 리미트: 영상 총 길이 + 5초 초과 시 폐기
             if (totalDuration > 0 && currentTime > totalDuration + 5.0) return null;
+
+            // [C안] 타임스탬프 역행 방지: 이전 유효 시간보다 2초 이상 뒤로 가면 보정
+            if (lastValidTime >= 0 && currentTime < lastValidTime - 2.0) {
+                currentTime = lastValidTime + 0.5; // 이전 시간 직후로 보정
+            }
+            lastValidTime = currentTime;
 
             const normalizedContent = content.toLowerCase().trim();
 
