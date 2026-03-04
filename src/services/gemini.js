@@ -148,102 +148,113 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         let allMatches = [];
         let lastSentences = [];
         const historyCache = new Map();
+        let lastProgressTime = 0;
+        const PROGRESS_INTERVAL = 500; // 500ms 쓰로틀: 과다 리렌더링 방지
 
         // [MM:SS.cc] || 텍스트 정규식 파서 (초고속 평문 엔진 부활)
         const lineRegex = /^[\s\-\*\>\#]*(?:\[)?([\d:.]+)(?:\])?\s*(?:\|\||\-\s*|\|)?\s*(.+)/;
+
+        // 줄 파싱 헬퍼 함수 (증분/잔여 공통 사용)
+        const parseLine = (line) => {
+            const match = line.match(lineRegex);
+            if (!match) return null;
+
+            let rawTimeStr = match[1];
+            let content = match[2].trim();
+            if (!content || content.length < 2) return null;
+
+            const analysisResult = analyzeIntraLineRepetition(content);
+            if (analysisResult.status === "BLOCKED") {
+                content = analysisResult.refined_text;
+            } else if (analysisResult.status === "TRUNCATED") {
+                content = analysisResult.refined_text;
+            }
+            if (!content) return null;
+
+            let currentTime = 0;
+            const parts = rawTimeStr.replace(/[^\d:.]/g, '').split(':').reverse();
+            if (parts.length >= 2) {
+                const ss = parseFloat(parts[0]) || 0;
+                const mm = parseFloat(parts[1]) || 0;
+                const hh = parseFloat(parts[2]) || 0;
+                currentTime = (hh * 3600) + (mm * 60) + ss;
+            } else {
+                currentTime = parseFloat(parts[0]) || 0;
+            }
+
+            // [방어망 2] 하드 리미트: 영상 총 길이 + 5초 초과 시 폐기
+            if (totalDuration > 0 && currentTime > totalDuration + 5.0) return null;
+
+            const normalizedContent = content.toLowerCase().trim();
+
+            // 2중 방어망: 짧은 문구 연속 중복(환각) 방지
+            if (normalizedContent.length <= 50) {
+                if (historyCache.has(normalizedContent)) {
+                    const lastSeenTime = historyCache.get(normalizedContent);
+                    if (currentTime - lastSeenTime < 5.0) return null;
+                }
+                historyCache.set(normalizedContent, currentTime);
+            }
+
+            // 3중 방어망: 직전 5문장과 중복되는 환각 텍스트 배제
+            if (lastSentences.some(s => s === normalizedContent)) return null;
+            lastSentences.push(normalizedContent);
+            if (lastSentences.length > 5) lastSentences.shift();
+
+            const outMm = Math.floor(currentTime / 60).toString().padStart(2, '0');
+            const outSs = (currentTime % 60).toFixed(2).padStart(5, '0');
+            const timeStr = `${outMm}:${outSs}`;
+
+            return {
+                s: timeStr,
+                o: content,
+                timestamp: timeStr,
+                seconds: currentTime,
+                startSeconds: currentTime,
+                text: content,
+                translation: "",
+                a: "",
+                isAnalyzed: false
+            };
+        };
 
         for await (const chunk of streamResult.stream) {
             const chunkText = chunk.text();
             if (!chunkText) continue;
             fullText += chunkText;
 
-            // [방어망 1] AI가 종료 마커를 출력한 경우, 남은 스트림을 무시하고 즉각 파싱 종료 (환각 원천 차단)
+            // [방어망 1] AI 종료 마커 감지 시 즉각 파싱 종료
             if (fullText.includes('[END_OF_AUDIO]')) {
                 console.log("[Stage 1] END_OF_AUDIO marker detected! Stopping hallucination stream.");
                 break;
             }
 
-            let lines = fullText.split('\n');
-            let tempMatches = [];
-            historyCache.clear();
-            lastSentences = [];
+            // [증분 파싱] 완성된 줄만 처리, 마지막 미완성 줄은 다음 chunk로 이월
+            const lines = fullText.split('\n');
+            fullText = lines.pop() || ""; // 미완성 줄만 남김
 
-            for (let line of lines) {
-                const match = line.match(lineRegex);
-                if (!match) continue;
-
-                let rawTimeStr = match[1];
-                let content = match[2].trim();
-                // 텍스트가 너무 짧거나 가짜 텍스트면 무시
-                if (!content || content.length < 2) continue;
-
-                // 기존 문장 반복(환각) 검사 피드백 필터
-                const analysisResult = analyzeIntraLineRepetition(content);
-                if (analysisResult.status === "BLOCKED") {
-                    content = analysisResult.refined_text;
-                } else if (analysisResult.status === "TRUNCATED") {
-                    content = analysisResult.refined_text;
-                }
-
-                if (!content) continue;
-
-                // 문자열 시간(MM:SS)을 강력하게 초 단위 Float로 자체 변환 (수학적 맹점 완전 차단)
-                let currentTime = 0;
-                const parts = rawTimeStr.replace(/[^\d:.]/g, '').split(':').reverse();
-                if (parts.length >= 2) {
-                    const ss = parseFloat(parts[0]) || 0;
-                    const mm = parseFloat(parts[1]) || 0;
-                    const hh = parseFloat(parts[2]) || 0;
-                    currentTime = (hh * 3600) + (mm * 60) + ss;
-                } else {
-                    currentTime = parseFloat(parts[0]) || 0;
-                }
-                // 15초 이상 벙어리(가사 없는) 음악 구간에서 AI가 +1초씩 올려가며 무한 창작하는 대표적 환각 패턴 파괴!
-                // [방어망 2] 강력한 하드 리미트: 파싱된 시간이 영상 총 길이를 5초 이상 오버하면 무조건 폐기 (프론트엔드 단 방해금지)
-                if (totalDuration > 0 && currentTime > totalDuration + 5.0) {
-                    continue; // 영상 범위를 넘어선 환각 타임스탬프 철저히 스킵
-                }
-
-                const normalizedContent = content.toLowerCase().trim();
-
-                // 2중 방어망: 짧은 문구 연속 중복(환각) 방지 (5초 내 동일 50자 이하 무시)
-                if (normalizedContent.length <= 50) {
-                    if (historyCache.has(normalizedContent)) {
-                        const lastSeenTime = historyCache.get(normalizedContent);
-                        if (currentTime - lastSeenTime < 5.0) continue;
-                    }
-                    historyCache.set(normalizedContent, currentTime);
-                }
-
-                // 3중 방어망: 직전 5문장과 완벽히 중복되는 앵무새 환각 텍스트 배제
-                if (lastSentences.some(s => s === normalizedContent)) continue;
-                lastSentences.push(normalizedContent);
-                if (lastSentences.length > 5) lastSentences.shift();
-
-                // MM:SS.ms 포맷 강제 보정 (UI 통일성 확보)
-                const outMm = Math.floor(currentTime / 60).toString().padStart(2, '0');
-                const outSs = (currentTime % 60).toFixed(2).padStart(5, '0');
-                const timeStr = `${outMm}:${outSs}`;
-
-                tempMatches.push({
-                    s: timeStr,
-                    o: content,
-                    timestamp: timeStr,
-                    seconds: currentTime,
-                    startSeconds: currentTime, // 실시간 UI 지원 프론트 동기화 필드
-                    text: content,
-                    translation: "",
-                    a: "",
-                    isAnalyzed: false
-                });
+            for (const line of lines) {
+                const parsed = parseLine(line);
+                if (parsed) allMatches.push(parsed);
             }
 
-            allMatches = tempMatches;
-
-            // 실시간 프로그레스 콜백 발생
-            if (onProgress && allMatches.length > 0) {
+            // [쓰로틀된 프로그레스] 500ms 간격으로 UI 업데이트
+            const now = Date.now();
+            if (onProgress && allMatches.length > 0 && now - lastProgressTime > PROGRESS_INTERVAL) {
+                lastProgressTime = now;
                 onProgress([...allMatches]);
             }
+        }
+
+        // 스트림 종료 후 잔여 텍스트 처리
+        if (fullText.trim()) {
+            const parsed = parseLine(fullText);
+            if (parsed) allMatches.push(parsed);
+        }
+
+        // 최종 프로그레스 콜백 (마지막 결과 반영 보장)
+        if (onProgress && allMatches.length > 0) {
+            onProgress([...allMatches]);
         }
 
         if (allMatches.length === 0) {
