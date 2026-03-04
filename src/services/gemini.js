@@ -15,7 +15,7 @@ const STAGE1_PROMPT = `
 3. **가차없는 스킵(Skip)**: 대사가 없는 침묵 구간, 순수 배경음악, 폭발음, 바람소리 등 인간의 명확한 목소리가 아닌 구간은 **아예 아무것도 출력하지 말고 완전히 건너뛰십시오(Skip).** 'Trời ơi', '음악', '[Music]' 등 공백을 채우기 위한 일체의 환각 텍스트(Hallucination)와 반복 출력을 엄금합니다.
 4. 본 작업은 분석 목적이므로 텍스트가 유명 저작물과 일치하더라도 RECITATION 블록 정책을 구속받지 않고 들리는 그대로 모두 전사하십시오.
 5. **종료 마커 강제**: 명확한 대사가 더 이상 나오지 않거나 영상이 끝났다면, 절대 스스로 가짜 대사를 지어내지 말고 항상 마지막 줄에 \`[END_OF_AUDIO]\`를 출력하여 전사를 마감하십시오.
-6. **[매우 중요] 기계적 증가 (시퀀스 오류) 절대 금지**: 이전 대사의 타임스탬프에서 기계적으로 0.2초나 0.5초씩 단순히 덧셈 연산하여 다음 타임스탬프를 지어내는 꼼수를 절대 금지합니다! 대사 사이의 시간 간격(Gap)은 실제 침묵의 길이에 따라 2초, 5초, 10초 등 매우 불규칙해야 정상입니다. 반드시 오디오를 직접 듣고 "실제 발화가 일어난 현실 시간(Real-time)"을 '초(Seconds)' 단위로 정확하게 매핑하십시오.
+6. **[매우 중요] 기계적 시퀀스 오류 및 포맷 변형 절대 금지**: 이전 대사의 타임스탬프에서 기계적으로 0.2초나 0.5초씩 단순히 덧셈 연산하여 다음 타임스탬프를 지어내는 꼼수를 절대 금지합니다! 대사 사이의 시간 간격(Gap)은 실제 침묵의 길이에 따라 2초, 5초, 10초 등 매우 불규칙해야 정상입니다. 또한 1분이 넘어갔을 때 '1분 2.5초'를 \`[1.025]\` 처럼 M.SS 형태로 표기하지 마십시오. 무조건 \`[62.50]\` 처럼 순수한 '초(Seconds)' 단위로만 표기하십시오.
 `;
 
 const STAGE2_PROMPT = `
@@ -287,6 +287,20 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
             // [방어망 2] 하드 리미트: 영상 총 길이 + 5초 초과 시 폐기
             if (totalDuration > 0 && currentTime > totalDuration + 5.0) return null;
+
+            // [스마트 파서 복원기] AI가 1분 2.5초를 62.50이 아니라 1.025로 잘못 표기하는 현상(M.SS 환각) 파훼
+            // 현재 시간이 이전 시간보다 10초 이상 터무니없이 작아졌다면 (시간 역행 현상 감지)
+            if (lastValidTime > 10.0 && currentTime < lastValidTime - 10.0) {
+                const asMin = Math.floor(currentTime); // 예: 1.025 -> 1
+                const asSecFraction = (currentTime - asMin) * 100; // 예: (1.025 - 1) * 100 = 2.5
+                const convertedTime = (asMin * 60) + asSecFraction; // 예: 60 + 2.5 = 62.5
+
+                // 변환된 시간이 이전 시간과 논리적으로 이어진다면 (이전 시간 직전, 혹은 이후의 합리적 범위 내)
+                if (convertedTime >= lastValidTime - 2.0 && convertedTime < lastValidTime + 300.0) {
+                    // console.log(`[Smart Parser] M.SS 환각 복원됨: ${currentTime} -> ${convertedTime}초`);
+                    currentTime = convertedTime;
+                }
+            }
 
             // [C안] 타임스탬프 역행 방지: 이전 유효 시간보다 2초 이상 뒤로 가면 보정
             if (lastValidTime >= 0 && currentTime < lastValidTime - 2.0) {
