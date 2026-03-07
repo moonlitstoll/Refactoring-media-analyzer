@@ -4,6 +4,11 @@ const STAGE1_PROMPT = `
 당신은 최고 수준의 다국어(한국어, 영어, 태국어, 베트남어, 중국어 등) 오디오 전문 전사자(Transcripter)입니다.
 전달된 미디어의 음성 트랙을 분석하여 정확한 타임라인 대본을 생성하되, 반드시 가장 가벼운 평문(Plain Text) 형태로 출력하십시오.
 
+[미디어 컨텍스트]
+- 화자는 한 명일 수도 있고 여러 명일 수도 있습니다.
+- 배경 음악이나 효과음이 포함될 수 있으니, 배경 음악의 가사를 대사로 오인하지 마십시오.
+- 성조 기호(베트남어 Dấu 등)를 반드시 정확하게 표기하십시오.
+
 [출력 형식]
 [00:00.00] || 첫 번째 대사 내용
 [00:05.30] || 두 번째 대사 내용
@@ -20,21 +25,22 @@ const STAGE1_PROMPT = `
 
 const STAGE2_PROMPT = `
 당신은 베트남어-영어-한국어 전문 번역가이자 언어 분석가입니다. 
-주어진 문장을 한국어로 번역하고, 아래 **[7대 분석 규칙]**을 엄격히 준수하여 상세히 풀이하십시오.
+주어진 문장을 한국어로 번역하고, 아래 **[9대 분석 규칙]**을 엄격히 준수하여 상세히 풀이하십시오.
 
-**[7대 분석 규칙]**
+**[9대 분석 규칙]**
 1. **의미 청크(Semantic Chunk) 통합 분석 (절대 원칙)**: 단어를 개별 행으로 나열하거나 슬래시('/') 등의 구분자로 쪼개지 마십시오. 반드시 의미가 하나로 이어지는 '청크(Chunk)'(예: 주어+동사+목적어)를 자연스러운 띄어쓰기만 사용하여 한 행에 묶어서 분석하십시오.
 2. **청크 내 전수 분석 (원라인 플러스/괄호 풀이)**: 청크 내부의 구성 단어는 행 끝의 괄호'()'와 '+'를 사용하여 풀이하십시오.
 3. **반복 설명 허용**: 이전 문장에서 나온 단어라도 현재 문장에서 쓰였다면 생략하지 말고 다시 설명하십시오.
 4. **단어별 단일 행(One Line) 분석**: 모든 단어(복합어 포함) 설명은 반드시 한 줄에 끝내십시오. 다음절 단어나 복합어 설명 시, 음절별 의미는 별도의 행을 만들지 말고 해당 행 안에서 '+' 또는 '()'를 사용하여 한꺼번에 설명하십시오.
-   - 예: phó thủ lãnh đạo: 부지도자, 부총리 (phó (버금 부) + thủ: 머리, 수장 (머리 수) + lãnh đạo: 지도자 (lãnh: 거느릴 령 + đạo: 이끌 도))
-5. **한자 캐릭터 병기 절대 금지**: 한자 기반 단어 분석 시에도 **실제 한자 캐릭터(예: 評價, 星)**를 절대로 병기하지 마십시오. 오직 한글로 된 뜻풀이(음과 뜻)만 포함하십시오.
-   - 예: tiền cọc: 보증금 (tiền (돈 전) + cọc (보증))
-   - 잘못된 예: 평가하다 (評價) <- 절대 금지
+   - 예: phó thủ lãnh đạo: 부지도자, 부총리 (phó (버금 부) + thủ: 머리, 수장 (머리 수) + lãnh đạo: 지도자 (거느릴 령 + 이끌 도))
+5. **한자 캐릭터 병기 절대 금지 및 중복 음 표기 제거**: 한자 기반 단어 분석 시에도 **실제 한자 캐릭터(예: 評價, 星)**를 절대로 병기하지 마십시오. 구체적으로 한자어 형태소를 분해할 때, 괄호 안에 '(음: 뜻 음)' 형태가 아닌 '(뜻 음)' 형태로 앞에 중복되는 한자음을 적지 마십시오.
+   - 예: tâm trạng: 기분/심정 (마음 심 + 정서 정)
+   - 잘못된 예: tâm trạng: 기분/심정 (심: 마음 심 + 정: 정서 정) 또는 평가하다 (評價) <- 절대 금지
 6. **청크 전체 볼드 처리 (Full Bold)**: 왼쪽의 원어 청크(Chunk) 전체를 반드시 **볼드** 처리하십시오. 슬래시(/)와 같은 구분자를 절대로 사용하지 마십시오.
    - 예: **Phần kem này**: 이 아이스크림 부분은 (Phần: 부분 + kem: 아이스크림 + nây: 이)
 7. **초단축 미니멀리즘 (핵심 키워드)**: 모든 설명에서 서술형(~을 나타냄, ~임)을 배제하십시오. 오직 핵심 뜻과 기능 키워드(예: 완료, 존칭, 미래)만 단어 위주로 짧게 표기하십시오. **(특히 (명사), (동사), (부사), (형용사), (접속사) 등 문법적 품사 태그는 절대로 넣지 마십시오.)**
-8. **문장 전수 분석 (누락 엄금)**: 문장의 첫 단어부터 마지막 단어까지 단 하나도 빠짐없이 청크 분석에 포함하십시오. 특히 문장 끝의 부사, 형용사 등을 절대로 생략하지 마십시오.
+8. **인칭 대명사 관계 설명 초간소화**: 인칭 대명사(anh, em, tôi 등)는 '화자보다 어린' 등 장황한 관계 설명을 절대 금지하고 '나', '너', '오빠' 등 1~2글자 단답형으로 적으십시오. (예: em: 나 (또는 문맥상 동생))
+9. **문장 전수 분석 (누락 엄금)**: 문장의 첫 단어부터 마지막 단어까지 단 하나도 빠짐없이 청크 분석에 포함하십시오. 특히 문장 끝의 부사, 형용사 등을 절대로 생략하지 마십시오.
 
 **[출력 형식]**
 - 시스템 파싱을 위해 각 분석 줄의 시작에 반드시 [분석] 마커를 붙이십시오. (이 마커는 화면에 노출되지 않고 제거됩니다.)
@@ -46,22 +52,23 @@ const STAGE2_PROMPT = `
 [번역] 나는 친구 한 명을 더 데리고 가서 손가락을 튕겨 나타나게 할 것이다.
 [분석] **Mình có thêm**: 나는 추가로 가지고 있다 (Mình: 나 + có: 가지다 + thêm: 추가로)
 [분석] **một đứa bạn nữa**: 친구 한 명을 더 (một: 한 개 + đứa: 명(단위) + bạn: 친구 + nữa: 더)
-[분석] **để mình búng tay nó xuất hiện**: 내가 손가락을 튕겨 나타나게 하기 위해 (để: ~하기 위해 + mình: 나 + búng tay: 손가락을 튕기다(búng: 튀기다 + tay: 손) + nó: 그것 + xuất hiện: 나타나다 (출: 날 출 + 현: 나타날 현))
+[분석] **để mình búng tay nó xuất hiện**: 내가 손가락을 튕겨 나타나게 하기 위해 (để: ~하기 위해 + mình: 나 + búng tay: 손가락을 튕기다(búng: 튀기다 + tay: 손) + nó: 그것 + xuất hiện: 나타나다 (날 출 + 나타날 현))
 `;
 
 const STAGE2_BATCH_PROMPT = `
 당신은 베트남어-영어-한국어 전문 번역가이자 언어 분석가입니다. 
-여러 개의 문장을 일괄 분석하며, 각 문장에 대해 아래 **[7대 분석 규칙]**을 절대적으로 준수하십시오.
+여러 개의 문장을 일괄 분석하며, 각 문장에 대해 아래 **[9대 분석 규칙]**을 절대적으로 준수하십시오.
 
-**[7대 분석 규칙]**
+**[9대 분석 규칙]**
 1. **의미 청크 통합 분석 (절대 원칙)**: 모든 분석은 '의미 청크' 단위로 묶어서 수행하십시오.
 2. **청크 내 전수 분석 (개별 행 금지)**: 청크 내부 단어를 해당 행 안에서 상세히 풀이하되, 이미 분석된 단어를 독립된 행으로 중복 출력하지 마십시오.
 3. **반복 설명 허용**: 이전 문장에 나온 단어라도 현재 문장에서 쓰였다면 다시 설명하십시오.
 4. **단어별 단일 행(One Line) 분석**: 모든 설명은 반드시 한 줄에 끝내며, 음절별 의미는 '+' 또는 '()'를 사용하여 한 줄에 통합하십시오.
-5. **한자 캐릭터 병기 절대 금지**: 실제 한자 캐릭터(예: 評價)를 병기하지 마십시오. 한자 뜻풀이(음과 뜻)는 한글로만 단어 설명 행 안에 포함하십시오.
+5. **한자 캐릭터 병기 절대 금지 및 중복 음 표기 제거**: 실제 한자 캐릭터(예: 評價)를 병기하지 마십시오. 한자어 분해 시 괄호 안에 '(음: 뜻 음)'이 아닌 '(뜻 음)' 형태로 중복 한자음 표기를 제거하십시오.
 6. **청크 전체 볼드 처리**: 원어 청크 전체를 **볼드** 처리하고, 별도의 패턴 설명은 하지 마십시오.
 7. **초단축 미니멀리즘**: 핵심 뜻과 기능 키워드 위주로 짧게 표기하십시오. **(명사), (동사) 등 품사 태그는 제외하십시오.**
-8. **문장 전수 분석**: 문장 내 모든 구성 요소를 누락 없이 청크 분석에 포함하십시오. 끝 단어 생략을 엄격히 금지합니다.
+8. **인칭 대명사 관계 설명 초간소화**: 인칭 대명사(anh, em, tôi 등)는 '화자보다 어린' 등 장황한 관계 설명을 절대 금지하고 '나', '너', '오빠' 등 1~2글자 단답형으로 적으십시오.
+9. **문장 전수 분석**: 문장 내 모든 구성 요소를 누락 없이 청크 분석에 포함하십시오. 끝 단어 생략을 엄격히 금지합니다.
 
 **[배칭 출력 마커 지침]**
 - 시스템 파싱을 위해 각 분석 줄의 맨 앞에 반드시 [분석] 마커를 붙이십시오. (이 마커는 화면에 노출되지 않고 제거됩니다.)
@@ -79,7 +86,7 @@ const STAGE2_BATCH_PROMPT = `
 [번역] 나는 친구 한 명을 더 데리고 가서 손가락을 튕겨 나타나게 할 것이다.
 [분석] **Mình có thêm**: 나는 추가로 가지고 있다 (Mình: 나 + có: 가지다 + thêm: 추가로)
 [분석] **một đứa bạn nữa**: 친구 한 명을 더 (một: 한 개 + đứa: 명(아이를 세는 단위) + bạn: 친구 + nữa: 더)
-[분석] **để mình búng tay nó xuất hiện**: 내가 손가락을 튕겨 나타나게 하기 위해 (để: ~하기 위해 + mình: 나 + búng tay: 손가락을 튕기다(búng: 튀기다 + tay: 손) + nó: 그것 + xuất hiện: 나타나다 (출: 날 출 + 현: 나타날 현))
+[분석] **để mình búng tay nó xuất hiện**: 내가 손가락을 튕겨 나타나게 하기 위해 (để: ~하기 위해 + mình: 나 + búng tay: 손가락을 튕기다(búng: 튀기다 + tay: 손) + nó: 그것 + xuất hiện: 나타나다 (날 출 + 나타날 현))
 --- [INDEX: 1] END ---
 
 **[주의 사항]**
@@ -94,21 +101,21 @@ const getModels = (modelId) => {
     return [found || "gemini-2.5-flash"];
 };
 
-// [A안] 비디오에서 오디오 트랙만 추출 (Web Audio API)
+// [A안] 비디오에서 오디오 트랙만 추출 (Web Audio API + 전처리 파이프라인)
 async function extractAudioFromVideo(file) {
     const arrayBuffer = await file.arrayBuffer();
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     await audioCtx.close();
 
-    // 모노로 다운믹스 + 16kHz로 리샘플링 (파일 크기 최소화)
-    const TARGET_SAMPLE_RATE = 16000;
+    // 모노로 다운믹스 + 22050Hz로 리샘플링 (음성 품질 보존 최적화)
+    const TARGET_SAMPLE_RATE = 22050;
     const numChannels = audioBuffer.numberOfChannels;
     const originalRate = audioBuffer.sampleRate;
     const ratio = TARGET_SAMPLE_RATE / originalRate;
     const newLength = Math.round(audioBuffer.length * ratio);
 
-    // 모노 다운믹스
+    // 1단계: 모노 다운믹스
     const monoData = new Float32Array(audioBuffer.length);
     for (let ch = 0; ch < numChannels; ch++) {
         const channelData = audioBuffer.getChannelData(ch);
@@ -117,7 +124,13 @@ async function extractAudioFromVideo(file) {
         }
     }
 
-    // 선형 보간 리샘플링
+    // 2단계: 하이패스 필터 (300Hz 이하 저주파 제거 - 배경음악/소음 억제)
+    applyHighPassFilter(monoData, originalRate, 300);
+
+    // 3단계: RMS 볼륨 노멀라이저 (작은 음성 증폭, 전체 볼륨 균일화)
+    normalizeVolume(monoData);
+
+    // 4단계: 선형 보간 리샘플링 (22050Hz)
     const resampledData = new Float32Array(newLength);
     for (let i = 0; i < newLength; i++) {
         const srcIdx = i / ratio;
@@ -157,6 +170,56 @@ function encodeWAV(samples, sampleRate) {
         view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
     }
     return buffer;
+}
+
+/**
+ * 1차 IIR 하이패스 필터 (300Hz 이하 저주파 제거)
+ * 배경 음악(베이스, 드럼), 에어컨/바람 소리 등 저주파 소음 억제
+ * In-place 처리로 메모리 효율적
+ */
+function applyHighPassFilter(samples, sampleRate, cutoffHz) {
+    const RC = 1.0 / (2.0 * Math.PI * cutoffHz);
+    const dt = 1.0 / sampleRate;
+    const alpha = RC / (RC + dt);
+
+    let prevInput = samples[0];
+    let prevOutput = samples[0];
+
+    for (let i = 1; i < samples.length; i++) {
+        const currentInput = samples[i];
+        prevOutput = alpha * (prevOutput + currentInput - prevInput);
+        prevInput = currentInput;
+        samples[i] = prevOutput;
+    }
+}
+
+/**
+ * RMS 기반 볼륨 노멀라이저
+ * 전체 볼륨을 일정 수준(-3dB ≈ 0.707)으로 맞춤
+ * 작은 목소리 증폭, 과도한 볼륨 억제
+ * In-place 처리
+ */
+function normalizeVolume(samples) {
+    // RMS (Root Mean Square) 계산
+    let sumSquares = 0;
+    for (let i = 0; i < samples.length; i++) {
+        sumSquares += samples[i] * samples[i];
+    }
+    const rms = Math.sqrt(sumSquares / samples.length);
+
+    if (rms < 0.0001) return; // 무음 파일 보호
+
+    const targetRMS = 0.707; // -3dB
+    const gain = targetRMS / rms;
+
+    // 클리핑 방지: gain을 최대 10배로 제한
+    const safeGain = Math.min(gain, 10.0);
+
+    for (let i = 0; i < samples.length; i++) {
+        samples[i] = Math.max(-1.0, Math.min(1.0, samples[i] * safeGain));
+    }
+
+    console.log(`[Audio Preprocessing] RMS Normalize: gain=${safeGain.toFixed(2)}x (original RMS=${rms.toFixed(4)})`);
 }
 
 async function fileToGenerativePart(file) {
@@ -221,7 +284,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                temperature: 0.1,
+                temperature: 0,
+                topP: 0.8,
                 maxOutputTokens: 65536,
                 ...(modelName.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {})
             },
@@ -246,7 +310,7 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const PROGRESS_INTERVAL = 500; // 500ms 쓰로틀: 과다 리렌더링 방지
 
         // [MM:SS.cc] || 텍스트 정규식 파서 (초고속 평문 엔진 부활)
-        const lineRegex = /^[\s\-\*\>\#]*(?:\[)?([\d:.]+)(?:\])?\s*(?:\|\||\-\s*|\|)?\s*(.+)/;
+        const lineRegex = /^[\s\-*>#]*(?:\[)?([\d:.]+)(?:\])?\s*(?:\|\||-\s*|\|)?\s*(.+)/;
 
         // [C안] 화면 텍스트 필터 패턴 (비음성 콘텐츠 자동 제거)
         const screenTextPatterns = /^(Phim:|Film:|Movie:|Sub:|Subtitle:|\[Music\]|\[Nhạc\]|\[음악\]|Nguồn:|Source:)/i;
