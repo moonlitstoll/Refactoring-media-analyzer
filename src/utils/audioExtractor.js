@@ -101,6 +101,56 @@ export async function extractAudioFromVideo(videoFile, onProgress = null) {
 }
 
 /**
+ * 오디오 파일 포맷 표준화 (Gemini 파싱 안정성 극대화)
+ * 원본 오디오를 최고 품질 MP3(44.1kHz)로 재포장하여 
+ * 포맷 파편화로 인한 전사 오류를 방지함
+ * @param {File} audioFile - 원본 오디오 파일
+ * @returns {Promise<Blob>} - 표준화된 MP3 오디오 Blob
+ */
+export async function standardizeAudioFormat(audioFile) {
+    const isAudio = audioFile.type && audioFile.type.startsWith('audio/');
+    if (!isAudio) {
+        throw new Error('오디오 파일만 지원됩니다');
+    }
+
+    let ffmpeg;
+    try {
+        ffmpeg = await getFFmpeg();
+    } catch (err) {
+        throw new Error(`FFmpeg 초기화 실패: ${err.message}`);
+    }
+
+    const inputName = 'input_audio' + getExtension(audioFile.name, audioFile.type);
+    const outputName = 'output_standard.mp3';
+
+    try {
+        await ffmpeg.writeFile(inputName, await fetchFile(audioFile));
+
+        await ffmpeg.exec([
+            '-i', inputName,
+            '-acodec', 'libmp3lame',
+            '-q:a', '0',
+            '-ar', '44100',
+            outputName
+        ]);
+
+        const data = await ffmpeg.readFile(outputName);
+        const audioBlob = new Blob([data.buffer], { type: 'audio/mp3' });
+
+        await ffmpeg.deleteFile(inputName).catch(() => { });
+        await ffmpeg.deleteFile(outputName).catch(() => { });
+
+        console.log(`[FFmpeg] Standardized audio format: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB`);
+        return audioBlob;
+
+    } catch (err) {
+        await ffmpeg.deleteFile(inputName).catch(() => { });
+        await ffmpeg.deleteFile(outputName).catch(() => { });
+        throw new Error(`포맷 표준화 실패: ${err.message}`);
+    }
+}
+
+/**
  * 파일 확장자 추출 헬퍼
  */
 function getExtension(filename, mimeType) {

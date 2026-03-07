@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
-import { extractAudioFromVideo } from "../utils/audioExtractor";
+import { extractAudioFromVideo, standardizeAudioFormat } from "../utils/audioExtractor";
 
 const STAGE1_PROMPT = `
 당신은 최고 수준의 다국어(한국어, 영어, 태국어, 베트남어, 중국어 등) 오디오 전문 전사자(Transcripter)입니다.
@@ -136,10 +136,33 @@ async function fileToGenerativePart(file) {
         }
     }
 
-    // [오디오 파일] or [비디오 FFmpeg 실패 폴백] → 원본 그대로 전송
+    // [오디오 파일] FFmpeg.wasm으로 포맷 표준화 (최고 품질 MP3)
+    // 파싱 에러 방지 및 안정성 극대화
     if (isAudio) {
-        console.log(`[Stage 1] Audio file: sending original (${(file.size / 1024 / 1024).toFixed(1)}MB, ${file.type})`);
+        console.log(`[Stage 1] Standardizing audio format via FFmpeg (${(file.size / 1024 / 1024).toFixed(1)}MB)...`);
+        try {
+            const audioBlob = await standardizeAudioFormat(file);
+            console.log(`[Stage 1] Audio standardized: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB`);
+
+            const reader = new FileReader();
+            return new Promise((resolve, reject) => {
+                reader.onloadend = () => resolve({
+                    inlineData: {
+                        data: reader.result.split(',')[1],
+                        mimeType: 'audio/mp3'
+                    }
+                });
+                reader.onerror = reject;
+                reader.readAsDataURL(audioBlob);
+            });
+        } catch (ffmpegErr) {
+            // 표준화 실패 → 원본 오디오 반환 (폴백)
+            console.warn('[Stage 1] Audio standardization failed, sending original:', ffmpegErr.message);
+        }
     }
+
+    // [비디오/오디오 FFmpeg 실패 폴백] → 원본 그대로 전송
+    console.log(`[Stage 1] Sending original fallback (${(file.size / 1024 / 1024).toFixed(1)}MB, ${file.type})`);
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -186,7 +209,28 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             safetySettings
         }, { apiVersion: "v1beta" });
 
-        const dynamicPrompt = STAGE1_PROMPT + `
+        let dynamicPrompt = STAGE1_PROMPT;
+        if (totalDuration > 0) {
+            // Helper function to format seconds into HH:MM:SS.ms
+            const formatTime = (seconds) => {
+                const ms = Math.floor((seconds % 1) * 1000).toString().padStart(3, '0');
+                const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+                const m = Math.floor((seconds / 60) % 60).toString().padStart(2, '0');
+                const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+                return `${h}:${m}:${s}.${ms}`;
+            };
+            dynamicPrompt += `\n[미디어 길이 정보] 00:00:00.000부터 ${formatTime(totalDuration)}까지의 전체 분량에 대해 타임스탬프를 작성하세요.\n`;
+        }
+
+        // 맹인 모드: 모든 파일(비디오 오픈, 오디오 오픈 공통)은 오직 '소리'만 전달됨
+        const audioOnlyPrompt = `
+[특별 주의 사항]
+본 데이터는 시각 단서(화면)가 전혀 없는 순수 오디오 데이터입니다. 화면을 묘사하거나 시각적 행동을 추론하려 하지 마십시오.
+화자의 미세한 톤 변화, 숨소리, 억양 등 오직 '청각적 단서'에만 100% 의존해서 대화의 문맥을 파악하고 전사하십시오.
+`;
+        dynamicPrompt += audioOnlyPrompt;
+
+        dynamicPrompt += `
 [필독: 영상 정보 및 절대 규칙]
 이 영상의 실제 총 재생 길이는 ${totalDuration.toFixed(1)}초 입니다.
 영상이 길더라도 처음(0초)부터 끝(${totalDuration.toFixed(1)}초)까지 빠짐없이 모든 대사를 전사하십시오.
