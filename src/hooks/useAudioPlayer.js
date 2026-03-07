@@ -141,21 +141,39 @@ export const useAudioPlayer = ({ activeFile }) => {
 
             const actualIdx = findActiveIndex(now, data);
 
+            // [추가] Action Guard: 수동 점프 직후 1.5초간 하이라이트 강제 고정
+            // 점프 시 Math.max(0, seconds - 1.0)으로 가기 때문에, 실제 index 구간에 진입하기 전까지 하이라이트를 유지함
+            const timeSinceAction = Date.now() - lastActionTimeRef.current;
+            const isWithinActionGuard = timeSinceAction < 1500;
+            const targetIdx = loopTargetIdxRef.current;
+
+            let finalIdx = actualIdx;
+            if (isWithinActionGuard && targetIdx !== null && data[targetIdx]) {
+                const item = data[targetIdx];
+                const bufferStart = Math.max(0, item.seconds - 1.2); // 약간의 마진 포함
+                const itemEnd = data[targetIdx + 1] ? data[targetIdx + 1].seconds : (v.duration || 999999);
+
+                // 현재 재생 위치가 타겟 문장의 버퍼 구간~끝 구간 내에 있다면 하이라이트 고정
+                if (now >= bufferStart && now < itemEnd) {
+                    finalIdx = targetIdx;
+                }
+            }
+
             // Loop Handling (Global Mode)
             if (isGlobalLoopActiveRef.current) {
                 // [Phase 4] 루프 락(Loop Lock): 지정된 loopTargetIdxRef를 기반으로 반복 처리
-                let targetIdx = loopTargetIdxRef.current;
+                let loopIdx = loopTargetIdxRef.current;
 
                 // 만약 타겟이 없으면 현재 실시간 인덱스로 초기화
-                if (targetIdx === null) {
-                    targetIdx = actualIdx;
+                if (loopIdx === null) {
+                    loopIdx = actualIdx;
                     loopTargetIdxRef.current = actualIdx;
                 }
 
-                if (data[targetIdx]) {
-                    const item = data[targetIdx];
+                if (data[loopIdx]) {
+                    const item = data[loopIdx];
                     const start = Math.max(0, item.seconds - 1.0);
-                    const nextItem = data[targetIdx + 1];
+                    const nextItem = data[loopIdx + 1];
                     // [Phase 4] 조기 종료 버그 수정: 5초 제한을 제거하고 실제 다음 문장 시작 전(+1초 버퍼)까지 재생
                     const end = nextItem
                         ? nextItem.seconds + 1.0
@@ -179,18 +197,21 @@ export const useAudioPlayer = ({ activeFile }) => {
                     }
 
                     // 2. 루프 중 UI 하이라이트 강제 고정 (버퍼 구간에서도 해당 문장이 활성 상태로 보이게 함)
-                    if (activeIdxRef.current !== targetIdx) {
-                        activeIdxRef.current = targetIdx;
-                        setActiveSentenceIdx(targetIdx);
+                    if (activeIdxRef.current !== loopIdx) {
+                        activeIdxRef.current = loopIdx;
+                        setActiveSentenceIdx(loopIdx);
                     }
                 }
             } else {
                 // 루프가 아닐 때만 정상 실시간 인덱스 업데이트
-                if (actualIdx !== activeIdxRef.current) {
-                    activeIdxRef.current = actualIdx;
-                    setActiveSentenceIdx(actualIdx);
+                if (finalIdx !== activeIdxRef.current) {
+                    activeIdxRef.current = finalIdx;
+                    setActiveSentenceIdx(finalIdx);
                     // 루프가 꺼져있을 때도 타겟 인덱스는 현재 위치를 따라가게 함
-                    loopTargetIdxRef.current = actualIdx;
+                    // 단, 가드 중에는 수동 설정된 값을 덮어쓰지 않도록 함
+                    if (!isWithinActionGuard) {
+                        loopTargetIdxRef.current = finalIdx;
+                    }
                 }
             }
         };
