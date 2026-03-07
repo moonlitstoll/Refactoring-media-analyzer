@@ -11,6 +11,8 @@ export const useMediaAnalysis = ({
     refreshCacheKeys,
     apiKey,
     selectedModel,
+    temperature,
+    topP,
     stage2AbortRef
 }) => {
     const [isDragging, setIsDragging] = useState(false);
@@ -152,11 +154,11 @@ export const useMediaAnalysis = ({
                     let fileDuration = 0;
                     try {
                         fileDuration = await getMediaDuration(fItem.file);
-                        console.log(`[Stage 1] Real duration for ${fItem.file.name}: ${fileDuration}s`);
+                        console.log(`[Stage 1] Real duration for ${fItem.file.name}: ${fileDuration}s (Temp: ${temperature}, TopP: ${topP})`);
 
                         rawData = await extractTranscript(fItem.file, apiKey, selectedModel, fileDuration, (incrementalData) => {
                             setFiles(prev => prev.map(p => p.id === fItem.id ? { ...p, data: incrementalData } : p));
-                        });
+                        }, temperature, topP);
                     } catch (apiError) {
                         throw new Error(`API Error (Stage 1): ${apiError.message}`);
                     }

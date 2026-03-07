@@ -21,6 +21,8 @@ const App = () => {
   const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
   const [bufferTime, setBufferTime] = useState(parseFloat(localStorage.getItem('miniapp_buffer_time')) || 0.3);
+  const [temperature, setTemperature] = useState(parseFloat(localStorage.getItem('miniapp_temperature')) || 0.4);
+  const [topP, setTopP] = useState(parseFloat(localStorage.getItem('miniapp_top_p')) || 0.5);
 
   // Multi-file state
   const [files, setFiles] = useState([]);
@@ -56,7 +58,7 @@ const App = () => {
   const { isDragging, onDragOver, onDragLeave, onDrop, processFiles, runStage2 } = useMediaAnalysis({
     setFiles, setActiveFileId, setIsSwitchingFile, resetPlayerState,
     refreshCacheKeys: () => refreshCacheKeysRef.current && refreshCacheKeysRef.current(),
-    apiKey, selectedModel, stage2AbortRef
+    apiKey, selectedModel, temperature, topP, stage2AbortRef
   });
 
   const { cacheKeys, deleteCache, clearAllCache, loadCache, refreshCacheKeys } = useMediaCache({
@@ -68,13 +70,17 @@ const App = () => {
     refreshCacheKeysRef.current = refreshCacheKeys;
   }, [refreshCacheKeys]);
 
-  const saveConfiguration = (key, model, buffer) => {
+  const saveConfiguration = (key, model, buffer, temp, p) => {
     localStorage.setItem('miniapp_gemini_key', key);
     localStorage.setItem('miniapp_gemini_model', model);
     localStorage.setItem('miniapp_buffer_time', buffer.toString());
+    localStorage.setItem('miniapp_temperature', temp.toString());
+    localStorage.setItem('miniapp_top_p', p.toString());
     setApiKey(key);
     setSelectedModel(model);
     setBufferTime(buffer);
+    setTemperature(temp);
+    setTopP(p);
     setShowSettings(false);
   };
 
@@ -172,6 +178,8 @@ const App = () => {
         apiKey={apiKey}
         setApiKey={setApiKey}
         selectedModel={selectedModel}
+        temperature={temperature}
+        topP={topP}
         saveConfiguration={saveConfiguration}
         cacheKeys={cacheKeys}
         loadCache={loadCache}
@@ -382,6 +390,10 @@ const App = () => {
           setSelectedModel={setSelectedModel}
           bufferTime={bufferTime}
           setBufferTime={setBufferTime}
+          temperature={temperature}
+          setTemperature={setTemperature}
+          topP={topP}
+          setTopP={setTopP}
           saveConfiguration={saveConfiguration}
           onClose={() => setShowSettings(false)}
         />

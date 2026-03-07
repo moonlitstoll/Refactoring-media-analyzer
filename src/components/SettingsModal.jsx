@@ -5,6 +5,8 @@ import {
 const SettingsModal = ({
     apiKey, setApiKey, selectedModel, setSelectedModel,
     bufferTime, setBufferTime,
+    temperature, setTemperature,
+    topP, setTopP,
     saveConfiguration, onClose
 }) => {
     return (
@@ -93,6 +95,58 @@ const SettingsModal = ({
                             문장 이동 또는 반복 재생 시, 문장 앞뒤로 들리는 여유 시간입니다. 기본값 0.3초를 추천합니다.
                         </p>
                     </div>
+
+                    <div className="space-y-4 pt-4 border-t border-slate-50">
+                        <div className="flex items-center justify-between">
+                            <div className="flex flex-col">
+                                <label className="text-sm font-bold text-slate-700">전사 창의성 (Temperature)</label>
+                                <span className="text-[10px] text-slate-400">높을수록 유연한 해석 (기본 0.4)</span>
+                            </div>
+                            <span className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg">{temperature.toFixed(2)}</span>
+                        </div>
+                        <div className="px-1">
+                            <input
+                                type="range"
+                                min="0.0"
+                                max="1.0"
+                                step="0.05"
+                                value={temperature}
+                                onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                                className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                            />
+                            <div className="flex justify-between text-[10px] text-slate-400 mt-2 font-bold px-1">
+                                <span>정밀 (0.0)</span>
+                                <span>기본 (0.4)</span>
+                                <span>유연 (1.0)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4 pt-4 border-t border-slate-50">
+                        <div className="flex items-center justify-between">
+                            <div className="flex flex-col">
+                                <label className="text-sm font-bold text-slate-700">단어 선택 범위 (TopP)</label>
+                                <span className="text-[10px] text-slate-400">높을수록 풍부한 표현 (기본 0.5)</span>
+                            </div>
+                            <span className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg">{topP.toFixed(2)}</span>
+                        </div>
+                        <div className="px-1">
+                            <input
+                                type="range"
+                                min="0.0"
+                                max="1.0"
+                                step="0.05"
+                                value={topP}
+                                onChange={(e) => setTopP(parseFloat(e.target.value))}
+                                className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                            />
+                            <div className="flex justify-between text-[10px] text-slate-400 mt-2 font-bold px-1">
+                                <span>집중 (0.0)</span>
+                                <span>기본 (0.5)</span>
+                                <span>다양 (1.0)</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div className="p-6 bg-slate-50 flex gap-3">
@@ -103,7 +157,7 @@ const SettingsModal = ({
                         Cancel
                     </button>
                     <button
-                        onClick={() => saveConfiguration(apiKey, selectedModel, bufferTime)}
+                        onClick={() => saveConfiguration(apiKey, selectedModel, bufferTime, temperature, topP)}
                         className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-indigo-200"
                     >
                         Save Configuration
