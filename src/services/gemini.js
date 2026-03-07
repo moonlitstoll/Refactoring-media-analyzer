@@ -213,7 +213,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
         // [MM:SS.cc] [화자 라벨] || 텍스트 정규식 파서 (화자 태그 등 중간 요소를 유연하게 무시하고 시간과 대사만 추출)
         // [수정점] 목차 번호(예: '1. [사전 통독]')가 초로 변환되는 버그를 막기 위해, 타임스탬프 캡처 그룹이 반드시 콜론(:)을 포함하도록 정규식을 강화
-        const lineRegex = /^[\s\-*>#]*(?:\[)?(\d+:\d+(?::\d+)?(?:\.\d+)?)(?:\])?\s*(?:\[[^\]]+\])?\s*(?:\|\||-\s*|\|)?\s*(.+)/;
+        // [수정점] 화자 라벨([...])을 캡처 그룹(2번)으로 추출하여 UI에서 다각도로 활용할 수 있게 개선
+        const lineRegex = /^[\s\-*>#]*(?:\[)?(\d+:\d+(?::\d+)?(?:\.\d+)?)(?:\])?\s*(?:\[([^\]]+)\])?\s*(?:\|\||-\s*|\|)?\s*(.+)/;
 
         // [C안] 화면 텍스트 필터 패턴 (비음성 콘텐츠 자동 제거)
         const screenTextPatterns = /^(Phim:|Film:|Movie:|Sub:|Subtitle:|\[Music\]|\[Nhạc\]|\[음악\]|Nguồn:|Source:)/i;
@@ -227,7 +228,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
             if (!match) return null;
 
             let rawTimeStr = match[1];
-            let content = match[2].trim();
+            let speaker = match[2] ? match[2].trim() : ""; // Capture group 2 for speaker
+            let content = match[3].trim(); // Capture group 3 for content
             if (!content || content.length < 2) return null;
 
             // [C안] 화면 텍스트 필터: 제목, 자막 라벨, 음악 표시 등 제거

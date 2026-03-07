@@ -36,6 +36,7 @@ export const sanitizeData = (data, duration = 0) => {
             const timestamp = item.s || item.timestamp;
             const secondsValue = item.v !== undefined ? item.v : item.seconds;
             const endValue = item.e !== undefined ? item.e : item.endSeconds;
+            const speaker = item.sp || item.speaker || "";
             let text = item.o || item.text || "(No text)";
             const translation = item.t || item.translation || "";
 
@@ -80,6 +81,7 @@ export const sanitizeData = (data, duration = 0) => {
                 seconds,
                 startSeconds, // Explicit float for sync
                 endSeconds,
+                speaker, // 화자 정보 포함
                 o: text,
                 text,
                 translation,

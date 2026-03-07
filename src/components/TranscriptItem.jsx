@@ -55,15 +55,26 @@ const TranscriptItem = memo(({
             <div>
                 {/* Header: Timestamp & Looping Indicator */}
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                    <button
-                        onClick={() => seekTo(item.seconds)}
-                        className={`
-              flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono tracking-wide transition-all
-              ${isActive ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}
-            `}
-                    >
-                        <Play size={8} fill="currentColor" /> {item.timestamp}
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => seekTo(item.seconds)}
+                            className={`
+                  flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono tracking-wide transition-all
+                  ${isActive ? 'bg-purple-100 text-purple-700 border border-purple-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}
+                `}
+                        >
+                            <Play size={8} fill="currentColor" /> {item.timestamp}
+                        </button>
+
+                        {item.speaker && (
+                            <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-tighter border ${isActive
+                                ? 'bg-purple-600 text-white border-purple-700 shadow-sm'
+                                : 'bg-slate-800 text-slate-200 border-slate-900 opacity-80'
+                                }`}>
+                                {item.speaker}
+                            </span>
+                        )}
+                    </div>
 
                     {isLooping && (
                         <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-tight animate-pulse border z-10 ${isActive ? 'bg-purple-50/50 text-purple-600 border-purple-100' : 'bg-amber-50/50 text-amber-600 border-amber-100'}`}>
