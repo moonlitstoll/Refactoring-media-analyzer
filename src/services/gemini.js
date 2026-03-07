@@ -172,8 +172,10 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                temperature: 0.1,
-                topP: 0.9,
+                // [Zero-Creativity] 무작위성 0%, 최적의 답변 고정. 창의적 환각(상상) 원천 차단
+                temperature: 0.0,
+                // [Zero-Creativity] 후보 단어풀 최소화. 다른 단어를 고려할 여지를 강하게 제거
+                topP: 0.1,
                 maxOutputTokens: 65536,
                 ...(modelName.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {})
             },
