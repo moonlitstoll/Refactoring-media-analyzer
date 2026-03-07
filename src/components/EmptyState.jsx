@@ -11,6 +11,7 @@ const EmptyState = ({
     selectedModel, setSelectedModel,
     temperature, setTemperature,
     topP, setTopP,
+    bufferTime, setBufferTime,
     saveConfiguration,
     cacheKeys, loadCache, deleteCache, clearAllCache
 }) => {
@@ -37,8 +38,8 @@ const EmptyState = ({
                     setApiKey={setApiKey}
                     selectedModel={selectedModel}
                     setSelectedModel={setSelectedModel}
-                    bufferTime={0.3}
-                    setBufferTime={() => { }}
+                    bufferTime={bufferTime}
+                    setBufferTime={setBufferTime}
                     temperature={temperature}
                     setTemperature={setTemperature}
                     topP={topP}

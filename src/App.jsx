@@ -178,8 +178,13 @@ const App = () => {
         apiKey={apiKey}
         setApiKey={setApiKey}
         selectedModel={selectedModel}
+        setSelectedModel={setSelectedModel}
+        bufferTime={bufferTime}
+        setBufferTime={setBufferTime}
         temperature={temperature}
+        setTemperature={setTemperature}
         topP={topP}
+        setTopP={setTopP}
         saveConfiguration={saveConfiguration}
         cacheKeys={cacheKeys}
         loadCache={loadCache}
