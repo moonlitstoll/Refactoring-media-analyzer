@@ -110,19 +110,19 @@ async function fileToGenerativePart(file) {
     const isVideo = file.type && file.type.startsWith('video/');
     const isAudio = file.type && file.type.startsWith('audio/');
 
-    // [Web Audio API 스테레오 오디오 추출] - 비디오 프레임 제거 및 오디오 포맷 통일 (WAV)
-    // 모노 다운믹스 없이 스테레오 그대로 100% 보존
-    console.log(`[Stage 1] Extracting native original audio from ${file.type} (${(file.size / 1024 / 1024).toFixed(1)}MB)...`);
+    // [FFmpeg 단일 스레드 오디오 100% 무변환 적출 (Demuxing)]
+    // 리샘플링/디코딩/인코딩을 거치지 않아 원본의 피치와 타임라인이 0.1%도 왜곡되지 않음
+    console.log(`[Stage 1] Extracting demuxed original audio from ${file.type} (${(file.size / 1024 / 1024).toFixed(1)}MB)...`);
     try {
         const audioBlob = await extractOriginalAudio(file);
-        console.log(`[Stage 1] Extraction complete: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB`);
+        console.log(`[Stage 1] Demuxing complete: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB`);
 
         const reader = new FileReader();
         return new Promise((resolve, reject) => {
             reader.onloadend = () => resolve({
                 inlineData: {
                     data: reader.result.split(',')[1],
-                    mimeType: 'audio/wav'
+                    mimeType: audioBlob.type || 'audio/aac'
                 }
             });
             reader.onerror = reject;

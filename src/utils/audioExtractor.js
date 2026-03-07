@@ -1,81 +1,73 @@
-/**
- * Web Audio API 기반 오디오 추출 유틸리티 (스테레오/멀티채널 보존)
- * 비디오 프레임을 제거하고 오디오만 순수 WAV로 추출하여 타임라인 밀림 현상을 방지함.
- * FFmpeg 등 무거운 패키지 없이 브라우저 네이티브 기능만 사용함.
- */
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile } from '@ffmpeg/util';
+
+let ffmpegInstance = null;
+let isLoading = false;
 
 /**
- * 미디어 파일에서 원본 채널(스테레오)을 유지한 채 오디오 트랙을 추출합니다.
- * 모노 다운믹스를 하지 않으므로 100% 원본의 공간감과 음질이 보존됩니다.
- * 
- * @param {File} file - 입력 미디어 파일 (주로 비디오)
- * @returns {Promise<Blob>} - 추출된 스테레오 WAV 오디오 Blob
+ * FFmpeg 싱글 스레드 인스턴스 반환 
+ * (SharedArrayBuffer가 필요 없는 100% 안전한 코어로 구동)
  */
-export async function extractOriginalAudio(file) {
-    const arrayBuffer = await file.arrayBuffer();
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    let audioBuffer;
+async function getFFmpeg() {
+    if (ffmpegInstance) return ffmpegInstance;
+    if (isLoading) {
+        while (isLoading) await new Promise(r => setTimeout(r, 100));
+        return ffmpegInstance;
+    }
+
+    isLoading = true;
     try {
-        audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        const ffmpeg = new FFmpeg();
+        // 기본 모듈 로드 (core-mt 제외, 보안 정책 충돌 제로)
+        await ffmpeg.load();
+        ffmpegInstance = ffmpeg;
+        return ffmpeg;
     } catch (err) {
-        throw new Error(`오디오 디코딩 실패: ${err.message}`);
+        console.error('FFmpeg Load Error:', err);
+        throw new Error(`FFmpeg 로드 실패: ${err.message}`);
     } finally {
-        await audioCtx.close();
+        isLoading = false;
     }
-
-    const numChannels = audioBuffer.numberOfChannels; // 예: 2 (스테레오)
-    const sampleRate = audioBuffer.sampleRate;
-    const length = audioBuffer.length;
-
-    // 다중 채널 인터리빙 (Interleaving)
-    // 채널을 병합(다운믹스)하지 않고 L, R, L, R 빈도로 교대로 끼워넣습니다.
-    const interleaved = new Float32Array(length * numChannels);
-    for (let ch = 0; ch < numChannels; ch++) {
-        const channelData = audioBuffer.getChannelData(ch);
-        for (let i = 0; i < length; i++) {
-            interleaved[i * numChannels + ch] = channelData[i];
-        }
-    }
-
-    // 멀티채널 지원 WAV 포맷으로 인코딩
-    const wavBuffer = encodeWAVMultichannel(interleaved, numChannels, sampleRate);
-    return new Blob([wavBuffer], { type: 'audio/wav' });
 }
 
 /**
- * Float32Array 샘플 데이터를 멀티채널 PCM WAV 형식(ArrayBuffer)으로 변환합니다.
+ * 미디어 파일에서 오디오 트랙을 디코딩/재인코딩 없이 원본 그대로 복사 적출(Demuxing)합니다.
+ * 타임스탬프 왜곡 및 리샘플링 음질 변형 0% 보장.
+ * 
+ * @param {File} file - 입력 비디오/오디오 파일
+ * @returns {Promise<Blob>} - 압축 해제 없이 꺼낸 순수 오디오 트랙 (AAC 등)
  */
-function encodeWAVMultichannel(samples, numChannels, sampleRate) {
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    const writeString = (offset, str) => {
-        for (let i = 0; i < str.length; i++) {
-            view.setUint8(offset + i, str.charCodeAt(i));
+export async function extractOriginalAudio(file) {
+    const ffmpeg = await getFFmpeg();
+
+    // 파일명에서 확장자 유추 (비디오 등)
+    const inputExt = file.name.split('.').pop() || 'mp4';
+    const inputName = `input_${Date.now()}.${inputExt}`;
+    // 원본이 주로 AAC를 포함하므로, 컨테이너만 m4a 또는 aac로 변경하여 빼냅니다.
+    const outputName = `output_${Date.now()}.aac`;
+
+    try {
+        // 1. 메모리에 파일 쓰기
+        await ffmpeg.writeFile(inputName, await fetchFile(file));
+
+        // 2. 무변환(Demuxing) 추출 실행 
+        // -vn : 비디오 트랙 무시
+        // -acodec copy : 오디오 트랙 압축 해제 없이(재인코딩 없이) 그냥 복사해서 빼냄
+        await ffmpeg.exec(['-i', inputName, '-vn', '-acodec', 'copy', outputName]);
+
+        // 3. 적출된 결과 읽기
+        const data = await ffmpeg.readFile(outputName);
+        return new Blob([data.buffer], { type: 'audio/aac' });
+    } catch (err) {
+        console.error('FFmpeg extraction error:', err);
+        throw new Error(`오디오 트랙 적출 실패: ${err.message}`);
+    } finally {
+        // 4. 가상 파일 정리
+        try {
+            await ffmpeg.deleteFile(inputName);
+            await ffmpeg.deleteFile(outputName);
+        } catch (cleanupErr) {
+            console.warn('FFmpeg cleanup:', cleanupErr);
         }
-    };
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-
-    view.setUint32(16, 16, true);           // Chunk size (16 for PCM)
-    view.setUint16(20, 1, true);            // AudioFormat (1=PCM)
-    view.setUint16(22, numChannels, true);  // NumChannels
-    view.setUint32(24, sampleRate, true);   // SampleRate
-    view.setUint32(28, sampleRate * numChannels * 2, true); // ByteRate
-    view.setUint16(32, numChannels * 2, true); // BlockAlign
-    view.setUint16(34, 16, true);           // BitsPerSample
-
-    writeString(36, 'data');
-    view.setUint32(40, samples.length * 2, true);
-
-    // Float32 -> Int16 변환 및 저장
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++, offset += 2) {
-        const s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
     }
-
-    return buffer;
 }
