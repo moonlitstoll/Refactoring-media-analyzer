@@ -1,168 +1,81 @@
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
-
-let ffmpegInstance = null;
-let isLoaded = false;
-let isLoading = false;
+/**
+ * Web Audio API 기반 오디오 추출 유틸리티 (스테레오/멀티채널 보존)
+ * 비디오 프레임을 제거하고 오디오만 순수 WAV로 추출하여 타임라인 밀림 현상을 방지함.
+ * FFmpeg 등 무거운 패키지 없이 브라우저 네이티브 기능만 사용함.
+ */
 
 /**
- * FFmpeg 싱글톤 인스턴스 반환 (최초 1회 초기화)
+ * 미디어 파일에서 원본 채널(스테레오)을 유지한 채 오디오 트랙을 추출합니다.
+ * 모노 다운믹스를 하지 않으므로 100% 원본의 공간감과 음질이 보존됩니다.
+ * 
+ * @param {File} file - 입력 미디어 파일 (주로 비디오)
+ * @returns {Promise<Blob>} - 추출된 스테레오 WAV 오디오 Blob
  */
-async function getFFmpeg() {
-    if (isLoaded && ffmpegInstance) return ffmpegInstance;
-    if (isLoading) {
-        // 이미 로딩 중이면 로드 완료까지 대기
-        while (isLoading) await new Promise(r => setTimeout(r, 100));
-        return ffmpegInstance;
-    }
-
-    isLoading = true;
-    ffmpegInstance = new FFmpeg();
-
+export async function extractOriginalAudio(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let audioBuffer;
     try {
-        // CDN에서 FFmpeg 코어 파일 로드 (브라우저 캐시 활용)
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-        await ffmpegInstance.load({
-            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-        isLoaded = true;
-        console.log('[FFmpeg] Loaded successfully');
+        audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     } catch (err) {
-        ffmpegInstance = null;
-        isLoading = false;
-        throw new Error(`FFmpeg 로드 실패: ${err.message}`);
+        throw new Error(`오디오 디코딩 실패: ${err.message}`);
+    } finally {
+        await audioCtx.close();
     }
 
-    isLoading = false;
-    return ffmpegInstance;
+    const numChannels = audioBuffer.numberOfChannels; // 예: 2 (스테레오)
+    const sampleRate = audioBuffer.sampleRate;
+    const length = audioBuffer.length;
+
+    // 다중 채널 인터리빙 (Interleaving)
+    // 채널을 병합(다운믹스)하지 않고 L, R, L, R 빈도로 교대로 끼워넣습니다.
+    const interleaved = new Float32Array(length * numChannels);
+    for (let ch = 0; ch < numChannels; ch++) {
+        const channelData = audioBuffer.getChannelData(ch);
+        for (let i = 0; i < length; i++) {
+            interleaved[i * numChannels + ch] = channelData[i];
+        }
+    }
+
+    // 멀티채널 지원 WAV 포맷으로 인코딩
+    const wavBuffer = encodeWAVMultichannel(interleaved, numChannels, sampleRate);
+    return new Blob([wavBuffer], { type: 'audio/wav' });
 }
 
 /**
- * 비디오 파일에서 오디오 트랙을 MP3로 추출
- * @param {File} videoFile - 비디오 파일
- * @param {Function} onProgress - 진행률 콜백 (0~100)
- * @returns {Promise<Blob>} - MP3 오디오 Blob
+ * Float32Array 샘플 데이터를 멀티채널 PCM WAV 형식(ArrayBuffer)으로 변환합니다.
  */
-export async function extractAudioFromVideo(videoFile, onProgress = null) {
-    const isVideo = videoFile.type && videoFile.type.startsWith('video/');
-    if (!isVideo) {
-        throw new Error('비디오 파일만 지원됩니다');
-    }
-
-    let ffmpeg;
-    try {
-        ffmpeg = await getFFmpeg();
-    } catch (err) {
-        throw new Error(`FFmpeg 초기화 실패: ${err.message}`);
-    }
-
-    // 진행률 콜백 연결
-    if (onProgress) {
-        ffmpeg.on('progress', ({ progress }) => {
-            onProgress(Math.round(progress * 100));
-        });
-    }
-
-    const inputName = 'input' + getExtension(videoFile.name, videoFile.type);
-    const outputName = 'output.mp3';
-
-    try {
-        // 파일 가상 파일시스템에 업로드
-        await ffmpeg.writeFile(inputName, await fetchFile(videoFile));
-
-        // 오디오 트랙 추출 (최고 품질 MP3, 비디오 트랙 제거)
-        await ffmpeg.exec([
-            '-i', inputName,
-            '-vn',               // 비디오 트랙 제거
-            '-acodec', 'libmp3lame',
-            '-q:a', '0',         // 최고 품질 VBR
-            '-ar', '44100',      // 44.1kHz 샘플레이트 유지
-            outputName
-        ]);
-
-        // 결과 파일 읽기
-        const data = await ffmpeg.readFile(outputName);
-        const audioBlob = new Blob([data.buffer], { type: 'audio/mp3' });
-
-        // 가상 파일시스템 정리
-        await ffmpeg.deleteFile(inputName).catch(() => { });
-        await ffmpeg.deleteFile(outputName).catch(() => { });
-
-        console.log(`[FFmpeg] Extracted audio: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB from ${(videoFile.size / 1024 / 1024).toFixed(1)}MB video`);
-        return audioBlob;
-
-    } catch (err) {
-        // 정리 시도
-        await ffmpeg.deleteFile(inputName).catch(() => { });
-        await ffmpeg.deleteFile(outputName).catch(() => { });
-        throw new Error(`오디오 추출 실패: ${err.message}`);
-    }
-}
-
-/**
- * 오디오 파일 포맷 표준화 (Gemini 파싱 안정성 극대화)
- * 원본 오디오를 최고 품질 MP3(44.1kHz)로 재포장하여 
- * 포맷 파편화로 인한 전사 오류를 방지함
- * @param {File} audioFile - 원본 오디오 파일
- * @returns {Promise<Blob>} - 표준화된 MP3 오디오 Blob
- */
-export async function standardizeAudioFormat(audioFile) {
-    const isAudio = audioFile.type && audioFile.type.startsWith('audio/');
-    if (!isAudio) {
-        throw new Error('오디오 파일만 지원됩니다');
-    }
-
-    let ffmpeg;
-    try {
-        ffmpeg = await getFFmpeg();
-    } catch (err) {
-        throw new Error(`FFmpeg 초기화 실패: ${err.message}`);
-    }
-
-    const inputName = 'input_audio' + getExtension(audioFile.name, audioFile.type);
-    const outputName = 'output_standard.mp3';
-
-    try {
-        await ffmpeg.writeFile(inputName, await fetchFile(audioFile));
-
-        await ffmpeg.exec([
-            '-i', inputName,
-            '-acodec', 'libmp3lame',
-            '-q:a', '0',
-            '-ar', '44100',
-            outputName
-        ]);
-
-        const data = await ffmpeg.readFile(outputName);
-        const audioBlob = new Blob([data.buffer], { type: 'audio/mp3' });
-
-        await ffmpeg.deleteFile(inputName).catch(() => { });
-        await ffmpeg.deleteFile(outputName).catch(() => { });
-
-        console.log(`[FFmpeg] Standardized audio format: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB`);
-        return audioBlob;
-
-    } catch (err) {
-        await ffmpeg.deleteFile(inputName).catch(() => { });
-        await ffmpeg.deleteFile(outputName).catch(() => { });
-        throw new Error(`포맷 표준화 실패: ${err.message}`);
-    }
-}
-
-/**
- * 파일 확장자 추출 헬퍼
- */
-function getExtension(filename, mimeType) {
-    if (filename && filename.includes('.')) {
-        return '.' + filename.split('.').pop();
-    }
-    const mimeMap = {
-        'video/mp4': '.mp4',
-        'video/webm': '.webm',
-        'video/quicktime': '.mov',
-        'video/x-msvideo': '.avi',
-        'video/x-matroska': '.mkv',
+function encodeWAVMultichannel(samples, numChannels, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeString = (offset, str) => {
+        for (let i = 0; i < str.length; i++) {
+            view.setUint8(offset + i, str.charCodeAt(i));
+        }
     };
-    return mimeMap[mimeType] || '.mp4';
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+
+    view.setUint32(16, 16, true);           // Chunk size (16 for PCM)
+    view.setUint16(20, 1, true);            // AudioFormat (1=PCM)
+    view.setUint16(22, numChannels, true);  // NumChannels
+    view.setUint32(24, sampleRate, true);   // SampleRate
+    view.setUint32(28, sampleRate * numChannels * 2, true); // ByteRate
+    view.setUint16(32, numChannels * 2, true); // BlockAlign
+    view.setUint16(34, 16, true);           // BitsPerSample
+
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+
+    // Float32 -> Int16 변환 및 저장
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+
+    return buffer;
 }

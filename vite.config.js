@@ -6,10 +6,10 @@ export default defineConfig({
   plugins: [react()],
   base: '/',
   server: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
+    // headers: {
+    //   'Cross-Origin-Opener-Policy': 'same-origin',
+    //   'Cross-Origin-Embedder-Policy': 'require-corp',
+    // },
   },
   // FFmpeg.wasm WASM 파일 최적화 제외
   optimizeDeps: {
