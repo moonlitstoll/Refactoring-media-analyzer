@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { extractAudioFromVideo } from "../utils/audioExtractor";
 
 const STAGE1_PROMPT = `
 당신은 최고 수준의 다국어(한국어, 영어, 태국어, 베트남어, 중국어 등) 오디오 전문 전사자(Transcripter)입니다.
@@ -106,16 +107,46 @@ const getModels = (modelId) => {
 
 
 async function fileToGenerativePart(file) {
-    // 모든 파일(비디오/오디오)을 전처리 없이 원본 그대로 전송
-    // AI가 원본 그대로의 데이터를 분석하도록 하여 인위적인 손실 최소화
-    console.log(`[Stage 1] Sending original file (${(file.size / 1024 / 1024).toFixed(1)}MB, ${file.type})...`);
+    const isVideo = file.type && file.type.startsWith('video/');
+    const isAudio = file.type && file.type.startsWith('audio/');
+
+    // [비디오 전용] FFmpeg.wasm으로 오디오 트랙 추출 (최고 품질 MP3)
+    // 비디오 파일 크기를 대폭 줄여 API 전송 효율 향상
+    if (isVideo) {
+        console.log(`[Stage 1] Extracting audio from video via FFmpeg (${(file.size / 1024 / 1024).toFixed(1)}MB)...`);
+        try {
+            const audioBlob = await extractAudioFromVideo(file);
+            const sizeReduction = ((1 - audioBlob.size / file.size) * 100).toFixed(0);
+            console.log(`[Stage 1] Audio extracted: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB (${sizeReduction}% reduction)`);
+
+            const reader = new FileReader();
+            return new Promise((resolve, reject) => {
+                reader.onloadend = () => resolve({
+                    inlineData: {
+                        data: reader.result.split(',')[1],
+                        mimeType: 'audio/mp3'
+                    }
+                });
+                reader.onerror = reject;
+                reader.readAsDataURL(audioBlob);
+            });
+        } catch (ffmpegErr) {
+            // FFmpeg 초기화/추출 실패 → 원본 비디오 그대로 전송 (폴백)
+            console.warn('[Stage 1] FFmpeg extraction failed, sending original video:', ffmpegErr.message);
+        }
+    }
+
+    // [오디오 파일] or [비디오 FFmpeg 실패 폴백] → 원본 그대로 전송
+    if (isAudio) {
+        console.log(`[Stage 1] Audio file: sending original (${(file.size / 1024 / 1024).toFixed(1)}MB, ${file.type})`);
+    }
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
             resolve({
                 inlineData: {
                     data: reader.result.split(',')[1],
-                    mimeType: file.type || "audio/mpeg"
+                    mimeType: file.type || 'audio/mpeg'
                 }
             });
         };
