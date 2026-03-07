@@ -1,3 +1,4 @@
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { extractOriginalAudio } from "../utils/audioExtractor";
 
 const STAGE1_PROMPT = `
