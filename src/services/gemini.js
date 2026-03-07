@@ -104,91 +104,11 @@ const getModels = (modelId) => {
     return [found || "gemini-2.5-flash"];
 };
 
-// 미디어(비디오/오디오) 전처리 파이프라인 (Web Audio API)
-// 모노 다운믹스만 수행하여 음성 신호 집중 및 데이터 효율화 → WAV 출력
-async function preprocessAudio(file) {
-    const arrayBuffer = await file.arrayBuffer();
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-    await audioCtx.close();
-
-    const numChannels = audioBuffer.numberOfChannels;
-    const originalRate = audioBuffer.sampleRate;
-
-    // 1단계: 모노 다운믹스
-    const monoData = new Float32Array(audioBuffer.length);
-    for (let ch = 0; ch < numChannels; ch++) {
-        const channelData = audioBuffer.getChannelData(ch);
-        for (let i = 0; i < audioBuffer.length; i++) {
-            monoData[i] += channelData[i] / numChannels;
-        }
-    }
-
-    // WAV 인코딩 (원본 샘플레이트 유지)
-    const wavBuffer = encodeWAV(monoData, originalRate);
-    return new Blob([wavBuffer], { type: 'audio/wav' });
-}
-
-function encodeWAV(samples, sampleRate) {
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    const writeString = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, 1, true); // mono
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true); // byte rate
-    view.setUint16(32, 2, true); // block align
-    view.setUint16(34, 16, true); // bits per sample
-    writeString(36, 'data');
-    view.setUint32(40, samples.length * 2, true);
-
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++, offset += 2) {
-        const s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-    }
-    return buffer;
-}
-
-
 
 async function fileToGenerativePart(file) {
-    const isVideo = file.type && file.type.startsWith('video/');
-    const isAudio = file.type && file.type.startsWith('audio/');
-
-    // [비디오 전용] 모노 다운믹스 전처리 적용 (화면 텍스트 혼입 차단 + 채널 집중)
-    // [오디오는 원본 그대로] 재인코딩 손실 없이 원본 품질을 AI에 직접 전달
-    if (isVideo) {
-        console.log(`[Stage 1] Preprocessing video (${(file.size / 1024 / 1024).toFixed(1)}MB) → mono WAV...`);
-        try {
-            const audioBlob = await preprocessAudio(file);
-            console.log(`[Stage 1] Preprocessed: ${(audioBlob.size / 1024 / 1024).toFixed(1)}MB (${((1 - audioBlob.size / file.size) * 100).toFixed(0)}% size change)`);
-            const reader = new FileReader();
-            return new Promise((resolve, reject) => {
-                reader.onloadend = () => resolve({
-                    inlineData: {
-                        data: reader.result.split(',')[1],
-                        mimeType: 'audio/wav'
-                    }
-                });
-                reader.onerror = reject;
-                reader.readAsDataURL(audioBlob);
-            });
-        } catch (preprocessErr) {
-            console.warn('[Stage 1] Video preprocessing failed, falling back to original:', preprocessErr.message);
-        }
-    }
-
-    // 오디오 파일 or 전처리 실패 → 원본 그대로 전송 (손실 없는 원본 품질 보존)
-    if (isAudio) {
-        console.log(`[Stage 1] Audio file detected — sending original without preprocessing (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-    }
+    // 모든 파일(비디오/오디오)을 전처리 없이 원본 그대로 전송
+    // AI가 원본 그대로의 데이터를 분석하도록 하여 인위적인 손실 최소화
+    console.log(`[Stage 1] Sending original file (${(file.size / 1024 / 1024).toFixed(1)}MB, ${file.type})...`);
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -203,6 +123,7 @@ async function fileToGenerativePart(file) {
         reader.readAsDataURL(file);
     });
 }
+
 
 const safetySettings = [
     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
