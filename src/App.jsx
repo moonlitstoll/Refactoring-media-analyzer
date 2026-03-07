@@ -18,7 +18,7 @@ import EmptyState from './components/EmptyState';
 
 
 const App = () => {
-  const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || '');
+  const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
 
   // Multi-file state
