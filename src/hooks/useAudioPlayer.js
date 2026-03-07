@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
-export const useAudioPlayer = ({ activeFile }) => {
+export const useAudioPlayer = ({ activeFile, bufferTime = 0.3 }) => {
     const [activeSentenceIdx, setActiveSentenceIdx] = useState(-1);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -87,9 +87,9 @@ export const useAudioPlayer = ({ activeFile }) => {
             triggerManualScroll();
             // Global Loop 루프 타겟 업데이트
             loopTargetIdxRef.current = index;
-            seekTo(Math.max(0, activeFile.data[index].seconds - 1.0));
+            seekTo(Math.max(0, activeFile.data[index].seconds - bufferTime));
         }
-    }, [seekTo, activeFile, triggerManualScroll]);
+    }, [seekTo, activeFile, triggerManualScroll, bufferTime]);
 
     const handlePrev = useCallback((currentIndex) => {
         if (activeFile?.data?.length) {
@@ -142,7 +142,7 @@ export const useAudioPlayer = ({ activeFile }) => {
             const actualIdx = findActiveIndex(now, data);
 
             // [추가] Action Guard: 수동 점프 직후 1.5초간 하이라이트 강제 고정
-            // 점프 시 Math.max(0, seconds - 1.0)으로 가기 때문에, 실제 index 구간에 진입하기 전까지 하이라이트를 유지함
+            // 점프 시 Math.max(0, seconds - bufferTime)으로 가기 때문에, 실제 index 구간에 진입하기 전까지 하이라이트를 유지함
             const timeSinceAction = Date.now() - lastActionTimeRef.current;
             const isWithinActionGuard = timeSinceAction < 1500;
             const targetIdx = loopTargetIdxRef.current;
@@ -150,7 +150,7 @@ export const useAudioPlayer = ({ activeFile }) => {
             let finalIdx = actualIdx;
             if (isWithinActionGuard && targetIdx !== null && data[targetIdx]) {
                 const item = data[targetIdx];
-                const bufferStart = Math.max(0, item.seconds - 1.2); // 약간의 마진 포함
+                const bufferStart = Math.max(0, item.seconds - (bufferTime + 0.2)); // 약간의 마진 포함
                 const itemEnd = data[targetIdx + 1] ? data[targetIdx + 1].seconds : (v.duration || 999999);
 
                 // 현재 재생 위치가 타겟 문장의 버퍼 구간~끝 구간 내에 있다면 하이라이트 고정
@@ -172,12 +172,12 @@ export const useAudioPlayer = ({ activeFile }) => {
 
                 if (data[loopIdx]) {
                     const item = data[loopIdx];
-                    const start = Math.max(0, item.seconds - 1.0);
+                    const start = Math.max(0, item.seconds - bufferTime);
                     const nextItem = data[loopIdx + 1];
-                    // [Phase 4] 조기 종료 버그 수정: 5초 제한을 제거하고 실제 다음 문장 시작 전(+1초 버퍼)까지 재생
+                    // [Phase 4] 조기 종료 버그 수정: 5초 제한을 제거하고 실제 다음 문장 시작 전(+버퍼 버퍼)까지 재생
                     const end = nextItem
-                        ? nextItem.seconds + 1.0
-                        : (v.duration ? v.duration + 1.0 : 999999);
+                        ? nextItem.seconds + bufferTime
+                        : (v.duration ? v.duration + bufferTime : 999999);
 
                     // [Phase 4] 수동 시크(Seek) 대응: 사용자가 루프 범위 밖으로 강제 이동했다면 루프 타겟 재설정
                     if (v.currentTime < start - 2.0 || v.currentTime > end + 2.0) {
@@ -187,7 +187,7 @@ export const useAudioPlayer = ({ activeFile }) => {
 
                     // 1. 루프 범위 체크 및 되돌리기
                     if (v.currentTime >= end - 0.1 || v.ended) {
-                        // [4차 수정] 루프 재시작 시에도 1초간 철벽 가드
+                        // [4차 수정] 루프 재시작 시에도 버퍼 시간 보호
                         lastActionTimeRef.current = Date.now();
                         setIsPlaying(true);
 

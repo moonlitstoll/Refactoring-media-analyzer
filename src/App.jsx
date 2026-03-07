@@ -20,6 +20,7 @@ import EmptyState from './components/EmptyState';
 const App = () => {
   const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
+  const [bufferTime, setBufferTime] = useState(parseFloat(localStorage.getItem('miniapp_buffer_time')) || 0.3);
 
   // Multi-file state
   const [files, setFiles] = useState([]);
@@ -48,7 +49,7 @@ const App = () => {
     videoRef, activeSentenceIdx, currentTime, duration, playbackRate, isGlobalLoopActive, isPlaying,
     manualScrollNonce, handleRateChange, seekTo, togglePlay, toggleLoop, jumpToSentence,
     handlePrev, handleNext, resetPlayerState, activeIdxRef, lastActionTimeRef
-  } = useAudioPlayer({ activeFile });
+  } = useAudioPlayer({ activeFile, bufferTime });
 
   const refreshCacheKeysRef = useRef(null);
 
@@ -67,11 +68,13 @@ const App = () => {
     refreshCacheKeysRef.current = refreshCacheKeys;
   }, [refreshCacheKeys]);
 
-  const saveConfiguration = (key, model) => {
+  const saveConfiguration = (key, model, buffer) => {
     localStorage.setItem('miniapp_gemini_key', key);
     localStorage.setItem('miniapp_gemini_model', model);
+    localStorage.setItem('miniapp_buffer_time', buffer.toString());
     setApiKey(key);
     setSelectedModel(model);
+    setBufferTime(buffer);
     setShowSettings(false);
   };
 
@@ -377,6 +380,8 @@ const App = () => {
           setApiKey={setApiKey}
           selectedModel={selectedModel}
           setSelectedModel={setSelectedModel}
+          bufferTime={bufferTime}
+          setBufferTime={setBufferTime}
           saveConfiguration={saveConfiguration}
           onClose={() => setShowSettings(false)}
         />
