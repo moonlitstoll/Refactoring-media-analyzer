@@ -173,10 +173,10 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                // [Zero-Creativity] 무작위성 0%, 최적의 답변 고정. 창의적 환각(상상) 원천 차단
-                temperature: 0.0,
-                // [Zero-Creativity] 후보 단어풀 최소화. 다른 단어를 고려할 여지를 강하게 제거
-                topP: 0.1,
+                // [2단계 문맥 균형형] 기존 0.0에서 0.4로 상향. 1-Pass 통독 사전 요약본과 앞뒤 단어의 호응(Collocation)을 바탕으로 안 들리는 발음을 유추할 수 있도록 융통성 부여
+                temperature: 0.4,
+                // [2단계 문맥 균형형] 후보 단어풀을 50%까지 열어, 뻔한 무작위 오답 대신 논리적인 단어를 선택하게 함 (환각 방지의 마지노선)
+                topP: 0.5,
                 maxOutputTokens: 65536,
                 ...(modelName.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {})
             },
