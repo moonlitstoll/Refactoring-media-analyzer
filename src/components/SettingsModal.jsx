@@ -100,7 +100,7 @@ const SettingsModal = ({
                         <div className="flex items-center justify-between">
                             <div className="flex flex-col">
                                 <label className="text-sm font-bold text-slate-700">전사 창의성 (Temperature)</label>
-                                <span className="text-[10px] text-slate-400">높을수록 유연한 해석 (기본 0.4)</span>
+                                <span className="text-[10px] text-slate-400">높을수록 유연한 해석 (기본 0.3)</span>
                             </div>
                             <span className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg">{temperature.toFixed(2)}</span>
                         </div>
@@ -116,7 +116,7 @@ const SettingsModal = ({
                             />
                             <div className="flex justify-between text-[10px] text-slate-400 mt-2 font-bold px-1">
                                 <span>정밀 (0.0)</span>
-                                <span>기본 (0.4)</span>
+                                <span>기본 (0.3)</span>
                                 <span>유연 (1.0)</span>
                             </div>
                         </div>
@@ -126,7 +126,7 @@ const SettingsModal = ({
                         <div className="flex items-center justify-between">
                             <div className="flex flex-col">
                                 <label className="text-sm font-bold text-slate-700">단어 선택 범위 (TopP)</label>
-                                <span className="text-[10px] text-slate-400">높을수록 풍부한 표현 (기본 0.5)</span>
+                                <span className="text-[10px] text-slate-400">높을수록 풍부한 표현 (기본 0.7)</span>
                             </div>
                             <span className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg">{topP.toFixed(2)}</span>
                         </div>
@@ -142,7 +142,7 @@ const SettingsModal = ({
                             />
                             <div className="flex justify-between text-[10px] text-slate-400 mt-2 font-bold px-1">
                                 <span>집중 (0.0)</span>
-                                <span>기본 (0.5)</span>
+                                <span>기본 (0.7)</span>
                                 <span>다양 (1.0)</span>
                             </div>
                         </div>

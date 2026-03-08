@@ -21,8 +21,8 @@ const App = () => {
   const [apiKey, setApiKey] = useState(localStorage.getItem('miniapp_gemini_key') || import.meta.env.VITE_GEMINI_API_KEY || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('miniapp_gemini_model') || 'gemini-2.5-flash');
   const [bufferTime, setBufferTime] = useState(parseFloat(localStorage.getItem('miniapp_buffer_time')) || 0.3);
-  const [temperature, setTemperature] = useState(parseFloat(localStorage.getItem('miniapp_temperature')) || 0.4);
-  const [topP, setTopP] = useState(parseFloat(localStorage.getItem('miniapp_top_p')) || 0.5);
+  const [temperature, setTemperature] = useState(parseFloat(localStorage.getItem('miniapp_temperature')) || 0.3);
+  const [topP, setTopP] = useState(parseFloat(localStorage.getItem('miniapp_top_p')) || 0.7);
 
   // Multi-file state
   const [files, setFiles] = useState([]);

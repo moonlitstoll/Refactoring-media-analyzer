@@ -11,7 +11,7 @@ const STAGE1_PROMPT = `
 
 [단호한 규칙 - 환각 억제 및 문맥 복원]
 1. 화자 분류(Diarization) 강제: 대사 앞에는 반드시 \`[Speaker A]\`, \`[남자]\`, \`[Sơn]\` 등 화자를 구별하는 라벨을 붙이십시오. 화자가 바뀔 때마다 무조건 타임스탬프를 새로 발급하고 새 줄을 만들어야 합니다. 화자 라벨은 대화가 엉키는 것을 막는 핵심입니다.
-2. 오직 명확한 인간의 음성만! 배경 소음, 음악, 효과음을 절대로 묘사하거나 전사하지 마십시오. (예: [음악], (Music), [Laughter], (Sigh) 등 모든 비음성 정보 전사 금지) 화면에 보이는 자막/글씨, 배경음악, 빈칸 지어내기 또한 철저히 금지합니다.
+2. 오직 명확한 인간의 음성만! 배경 소음, 음악, 효과음을 절대로 묘사하거나 전사하지 마십시오. (예: [음악], (Music), [Laughter], (Sigh), [tiếng nhạc], [tiếng động], (Background Noise) 등 모든 비음성 정보 전사 금지) 화면에 보이는 자막/글씨, 배경음악, 빈칸 지어내기 또한 철저히 금지합니다.
 3. 문장 단위 전사 및 타임라인 동기화 (핵심): 한 문장이 끝나면(마침표, 물음표 등) 반드시 줄을 바꾸고 새로운 타임스탬프를 부여하십시오. 화자가 길게 말하더라도 뭉뚱그리지 말고, 각 문장의 '시작점'을 정확히 잡아 쪼개서 출력하십시오.
 4. 화자 분류(Diarization) 유지: 줄을 나눌 때마다 해당 화자 라벨을 계속 유지하십시오. (예: [00:05.10] [Speaker A] || 첫 문장 \n [00:08.30] [Speaker A] || 두 번째 문장)
 5. **유사 발음 및 문맥 호응 보정**: 베트남어 성조 등 모호한 구간은 앞뒤 상황 논리를 분석하여 가장 합리적인 단어로 전사하십시오.
@@ -150,7 +150,7 @@ const safetySettings = [
     { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
 ];
 
-export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash", totalDuration = 0, onProgress = null, temperature = 0.4, topP = 0.5) {
+export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash", totalDuration = 0, onProgress = null, temperature = 0.3, topP = 0.7) {
     // eslint-disable-next-line no-unused-vars
     const dummyDuration = totalDuration;
     if (!apiKey) throw new Error("API Key is required");
@@ -164,10 +164,10 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                // [2단계 문맥 균형형] 사용자가 설정한 온도 반영 (기본 0.4)
-                temperature: temperature || 0.4,
-                // [2단계 문맥 균형형] 사용자가 설정한 후보 샘플링 반영 (기본 0.5)
-                topP: topP || 0.5,
+                // [2단계 문맥 균형형] 사용자가 설정한 온도 반영 (기본 0.3)
+                temperature: temperature || 0.3,
+                // [2단계 문맥 균형형] 사용자가 설정한 후보 샘플링 반영 (기본 0.7)
+                topP: topP || 0.7,
                 maxOutputTokens: 65536,
                 ...(modelName.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {})
             },
@@ -216,8 +216,12 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         // [수정점] 문장 분리가 많아짐에 따라 앞에 붙는 기호나 괄호 처리를 더 유연하게 개선
         const lineRegex = /^[\s\-*>#]*(?:\[)?(\d+:[0-9.]+)(?:\])?\s*(?:\[([^\]]+)\])?\s*(?:\|\||-\s*|\||:)?\s*(.+)/;
 
-        // [C안] 화면 텍스트 필터 패턴: 제목, 자막 라벨, 음악/소음 표시 등 제거 (괄호 종류 무관 및 단독 표기도 차단)
-        const screenTextPatterns = /^(Phim:|Film:|Movie:|Sub:|Subtitle:|Nguồn:|Source:|[[({]?(Music|Nhạc|음악|Sound|Effect|Laughter|Applause|Noise|Silence)[[)}]?)[:\s-]*$/i;
+        // [C안] 화면 텍스트 및 비음성 묘사 필터 패턴: 제목, 자막 라벨, 음악/소음 표시 등 제거
+        // 괄호([]) 캡션 내부에 대사가 아닌 '묘사' 혹은 특정 키워드가 포함된 경우 필터링 (다국어 대응)
+        const screenTextPatterns = /^(Phim:|Film:|Movie:|Sub:|Subtitle:|Nguồn:|Source:|[[({]?(Music|Nhạc|음악|Sound|Effect|Laughter|Applause|Noise|Silence|tiếng|background|audio|động|thanh)[[)}]?)[:\s-]*$/i;
+
+        // 추가적인 괄호 전용 필터: [Music], (Laughter) 등 괄호로만 감싸진 단답형 묘사 차단
+        const bracketDescriptionPattern = /^[[({][^\]})]+[\]})]$/i;
 
         // [C안] 타임스탬프 역행 방지용 마지막 유효 시간 추적
         let lastValidTime = -1;
@@ -234,6 +238,9 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
 
             // [C안] 화면 텍스트 필터: 제목, 자막 라벨, 음악 표시 등 제거
             if (screenTextPatterns.test(content)) return null;
+
+            // [강화] 모든 형태의 괄호 묘사([tiếng nhạc] 등) 단독 출력 차단
+            if (bracketDescriptionPattern.test(content)) return null;
 
             const analysisResult = analyzeIntraLineRepetition(content);
             if (analysisResult.status === "BLOCKED") {
