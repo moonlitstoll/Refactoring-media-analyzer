@@ -150,7 +150,7 @@ const safetySettings = [
     { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
 ];
 
-export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash", totalDuration = 0, onProgress = null, temperature = 0.3, topP = 0.7) {
+export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flash", totalDuration = 0, onProgress = null, temperature = 0.5, topP = 0.7) {
     // eslint-disable-next-line no-unused-vars
     const dummyDuration = totalDuration;
     if (!apiKey) throw new Error("API Key is required");
@@ -164,8 +164,8 @@ export async function extractTranscript(file, apiKey, modelId = "gemini-2.0-flas
         const model = genAI.getGenerativeModel({
             model: modelName,
             generationConfig: {
-                // [2단계 문맥 균형형] 사용자가 설정한 온도 반영 (기본 0.3)
-                temperature: temperature || 0.3,
+                // [2단계 문맥 균형형] 사용자가 설정한 온도 반영 (기본 0.5)
+                temperature: temperature || 0.5,
                 // [2단계 문맥 균형형] 사용자가 설정한 후보 샘플링 반영 (기본 0.7)
                 topP: topP || 0.7,
                 maxOutputTokens: 65536,
