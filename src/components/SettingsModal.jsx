@@ -157,10 +157,25 @@ const SettingsModal = ({
                         Cancel
                     </button>
                     <button
-                        onClick={() => saveConfiguration(apiKey, selectedModel, bufferTime, temperature, topP)}
+                        onClick={() => {
+                            saveConfiguration(apiKey, selectedModel, bufferTime, temperature, topP);
+                            const btn = document.getElementById('save-config-btn');
+                            if (btn) {
+                                const originalText = btn.innerText;
+                                btn.innerText = "저장 완료!";
+                                btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+                                btn.classList.add('bg-emerald-500', 'hover:bg-emerald-600');
+                                setTimeout(() => {
+                                    btn.innerText = originalText;
+                                    btn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+                                    btn.classList.remove('bg-emerald-500', 'hover:bg-emerald-600');
+                                }, 2000);
+                            }
+                        }}
+                        id="save-config-btn"
                         className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-indigo-200"
                     >
-                        Save Configuration
+                        현재 AI 설정값을 기본값으로 저장
                     </button>
                 </div>
             </div>
